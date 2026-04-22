@@ -1,0 +1,18 @@
+[package]
+name = "exvisit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Project exvisit — .exv DSL parser, AST, and CRDT memory engine."
+
+[dependencies]
+pest        = { workspace = true }
+pest_derive = { workspace = true }
+rstar       = { workspace = true }
+serde       = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+
+[lib]
+path = "src/lib.rs"
+

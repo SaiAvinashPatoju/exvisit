@@ -1,0 +1,32 @@
+//! pest grammar for the .exv DSL. Matches spec/exvisit-dsl-v0.1.md.
+//! Whitespace (except newlines) and comments are stripped by the grammar itself.
+
+WHITESPACE  = _{ " " | "\t" | "\r" }
+COMMENT     = _{ "#" ~ (!"\n" ~ ANY)* }
+
+file        = { SOI ~ NEWLINE* ~ namespace ~ NEWLINE* ~ edges_block? ~ NEWLINE* ~ EOI }
+
+namespace   = { ns_marker ~ ident ~ bounds ~ string? ~ "{" ~ NEWLINE*
+              ~ (namespace | edges_block | node_row | NEWLINE)*
+              ~ "}" }
+
+ns_marker   = @{ "@L" ~ ASCII_DIGIT+ }
+
+bounds      = { "[" ~ number ~ "," ~ number ~ "," ~ number ~ "," ~ number ~ "]" }
+
+node_row    = { ident ~ bounds ~ (string | path)? ~ state_machine? ~ NEWLINE+ }
+
+state_machine = { "{" ~ ident ~ ("->" ~ ident)+ ~ "}" }
+
+edges_block = { "===" ~ "edges" ~ "===" ~ NEWLINE+ ~ (edge ~ NEWLINE+)* }
+
+edge        = { ident ~ arrow ~ ident }
+arrow       = { "->" | "~>" }
+
+// Lexical
+ident       = @{ ('a'..'z' | 'A'..'Z' | "_") ~ ('a'..'z' | 'A'..'Z' | '0'..'9' | "_" | ".")* }
+// A path token must contain '/' or '*' to avoid ambiguity with idents.
+path        = @{ (ASCII_ALPHANUMERIC | "_" | "-" | "." | "*")* ~ ("/" | "*") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "." | "*" | "/")* }
+number      = @{ "-"? ~ ASCII_DIGIT+ }
+string      = @{ "\"" ~ (!"\"" ~ !"\n" ~ ANY)* ~ "\"" }
+

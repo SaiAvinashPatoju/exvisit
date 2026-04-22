@@ -1,0 +1,94 @@
+# MySlicerApp.exv — v0.3 (verified clean against C:\B\MySlicerApp imports)
+# Medical 3D slicer / splint design application (PyVista + PySide6 + DICOM).
+#
+# CHANGES vs v0.2:
+#   - Added 6 missing `->` edges surfaced by `exvisit verify`:
+#       Project->Scene, Undo->Scene, Splint->MeshOps (was ~>), ObjectPanel->Scene,
+#       MeasurePanel->Measurements, PyVistaW->DicomLoader.
+#   - `exvisit verify` now reports 0 diagnostics.
+
+@L0 App [0,0,100,100] "C:/B/MySlicerApp" {
+  @L1 Entry [76,26,22,8] "main.py" {
+    main [1,1,18,4] main.py {boot -> running -> exit}
+  }
+  @L1 Shell [40,36,34,12] "maxmorph/app.py" {
+    MainWindow [1,1,30,8] app.py {boot -> idle -> busy}
+  }
+  @L1 Core [2,2,36,46] "maxmorph/core/*.py" {
+    Scene        [1,1,12,6] scene.py            {empty -> loaded -> dirty}
+    Project      [1,8,12,6] project.py          {new -> open -> saved}
+    DicomLoader  [14,1,12,6] dicom_loader.py    {idle -> loading -> ready}
+    Segmentation [14,8,12,6] segmentation.py
+    Undo         [1,15,12,4] undo_stack.py
+    Measurements [14,15,12,4] measurements.py
+    Console      [1,20,12,4] console_handler.py
+  }
+  @L1 Tools [40,2,34,32] "maxmorph/tools/*.py" {
+    MeshOps      [1,1,10,4]  mesh_ops.py
+    Scissors     [1,6,10,4]  scissors_tool.py      {idle -> drawing -> cut}
+    Eraser       [1,11,10,4] eraser_tool.py
+    CuttingPlane [12,1,10,4] cutting_plane_tool.py
+    Landmark     [12,6,10,4] landmark_tool.py
+    ICP          [12,11,10,4] icp_tool.py
+    Splint       [23,1,10,4] splint_ops.py
+    Gizmo        [23,6,10,4] transform_gizmo_tool.py
+  }
+  @L1 UI [76,2,22,22] "maxmorph/ui/*.py" {
+    ObjectPanel  [1,1,10,4] object_panel.py
+    MeasurePanel [1,6,10,4] measurements_panel.py
+  }
+  @L1 Viewport [2,50,72,30] "maxmorph/viewport/*.py" {
+    PyVistaW  [1,1,14,6]  pyvista_widget.py
+    SlicePane [17,1,14,6] slice_pane.py
+    SliceVP   [1,8,14,6]  slice_viewport.py
+    Layout    [17,8,14,6] layout_manager.py
+  }
+
+  === edges ===
+  # --- boot chain (hard imports) ---
+  main         -> MainWindow
+  MainWindow   -> Scene
+  MainWindow   -> Project
+  MainWindow   -> DicomLoader
+  MainWindow   -> Segmentation
+  MainWindow   -> Undo
+  MainWindow   -> Measurements
+  MainWindow   -> Console
+  MainWindow   -> MeshOps
+  MainWindow   -> Splint
+  MainWindow   -> Scissors
+  MainWindow   -> Eraser
+  MainWindow   -> CuttingPlane
+  MainWindow   -> Landmark
+  MainWindow   -> ICP
+  MainWindow   -> Gizmo
+  MainWindow   -> Layout
+  MainWindow   -> ObjectPanel
+  MainWindow   -> MeasurePanel
+  # --- viewport composition (hard imports) ---
+  Layout       -> PyVistaW
+  Layout       -> SlicePane
+  SlicePane    -> SliceVP
+  PyVistaW     -> DicomLoader
+  # --- intra-core hard imports (added v0.3) ---
+  Project      -> Scene
+  Undo         -> Scene
+  Splint       -> MeshOps
+  ObjectPanel  -> Scene
+  MeasurePanel -> Measurements
+  # --- runtime callback graph (events, not imports) ---
+  Scissors     ~> MeshOps
+  Eraser       ~> MeshOps
+  CuttingPlane ~> MeshOps
+  Splint       ~> MeshOps
+  ICP          ~> Scene
+  Landmark     ~> Scene
+  Gizmo        ~> Scene
+  ObjectPanel  ~> Scene
+  MeasurePanel ~> Measurements
+  PyVistaW     ~> Scene
+  SliceVP      ~> Scene
+  Scene        ~> Undo
+  Scene        ~> Console
+}
+

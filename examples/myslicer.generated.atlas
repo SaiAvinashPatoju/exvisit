@@ -1,0 +1,103 @@
+@L0 MaxMorph [0,0,100,100] "C:/B/MySlicerApp" {
+  @L1 MaxMorph [1,1,18,38] "*.py" {
+    Main [1,1,15,4] main.py
+  }
+  @L1 Maxmorph [21,1,18,38] "maxmorph/*.py" {
+    App [1,1,8,4] maxmorph/app.py
+    QaBridge [10,1,8,4] maxmorph/qa_bridge.py
+  }
+  @L1 Qa [41,1,18,38] "qa/*.py" {
+    BridgeClient [1,1,8,4] qa/bridge_client.py
+    QaTool [10,1,8,4] qa/qa_tool.py
+    RunQaSuite [19,1,8,4] qa/run_qa_suite.py
+  }
+  @L1 Tests [61,1,18,38] "tests/*.py" {
+    TestEraser [1,1,8,4] tests/test_eraser.py
+    TestLayoutManager [10,1,8,4] tests/test_layout_manager.py
+    TestMeasurements [19,1,8,4] tests/test_measurements.py
+    TestMeshOps [1,6,8,4] tests/test_mesh_ops.py
+    TestScissors [10,6,8,4] tests/test_scissors.py
+    TestSplintOps [19,6,8,4] tests/test_splint_ops.py
+    TestTransform [1,11,8,4] tests/test_transform.py
+  }
+  @L1 Tools [81,1,18,38] "tools/*.py" {
+    UiSmoke [1,1,8,4] tools/ui_smoke.py
+    ViewportBenchmark [10,1,8,4] tools/viewport_benchmark.py
+  }
+  @L1 Core [1,41,18,38] "maxmorph/core/*.py" {
+    ConsoleHandler [1,1,8,4] maxmorph/core/console_handler.py
+    DicomLoader [10,1,8,4] maxmorph/core/dicom_loader.py
+    Measurements [19,1,8,4] maxmorph/core/measurements.py
+    Project [1,6,8,4] maxmorph/core/project.py
+    Scene [10,6,8,4] maxmorph/core/scene.py
+    Segmentation [19,6,8,4] maxmorph/core/segmentation.py
+    UndoStack [1,11,8,4] maxmorph/core/undo_stack.py
+  }
+  @L1 Tools2 [21,41,18,38] "maxmorph/tools/*.py" {
+    CuttingPlaneTool [1,1,8,4] maxmorph/tools/cutting_plane_tool.py
+    EraserTool [10,1,8,4] maxmorph/tools/eraser_tool.py
+    IcpTool [19,1,8,4] maxmorph/tools/icp_tool.py
+    LandmarkTool [1,6,8,4] maxmorph/tools/landmark_tool.py
+    MeshOps [10,6,8,4] maxmorph/tools/mesh_ops.py
+    ScissorsTool [19,6,8,4] maxmorph/tools/scissors_tool.py
+    SplintOps [1,11,8,4] maxmorph/tools/splint_ops.py
+    TransformGizmoTool [10,11,8,4] maxmorph/tools/transform_gizmo_tool.py
+  }
+  @L1 Ui [41,41,18,38] "maxmorph/ui/*.py" {
+    MeasurementsPanel [1,1,8,4] maxmorph/ui/measurements_panel.py
+    ObjectPanel [10,1,8,4] maxmorph/ui/object_panel.py
+  }
+  @L1 Viewport [61,41,18,38] "maxmorph/viewport/*.py" {
+    LayoutManager [1,1,8,4] maxmorph/viewport/layout_manager.py
+    PyvistaWidget [10,1,8,4] maxmorph/viewport/pyvista_widget.py
+    SlicePane [19,1,8,4] maxmorph/viewport/slice_pane.py
+    SliceViewport [1,6,8,4] maxmorph/viewport/slice_viewport.py
+  }
+  === edges ===
+  App -> ConsoleHandler
+  App -> CuttingPlaneTool
+  App -> DicomLoader
+  App -> EraserTool
+  App -> IcpTool
+  App -> LandmarkTool
+  App -> LayoutManager
+  App -> Measurements
+  App -> MeasurementsPanel
+  App -> MeshOps
+  App -> ObjectPanel
+  App -> Project
+  App -> QaBridge
+  App -> Scene
+  App -> ScissorsTool
+  App -> Segmentation
+  App -> SplintOps
+  App -> TransformGizmoTool
+  App -> UndoStack
+  LayoutManager -> PyvistaWidget
+  LayoutManager -> SlicePane
+  Main -> App
+  MeasurementsPanel -> Measurements
+  ObjectPanel -> Scene
+  Project -> Scene
+  PyvistaWidget -> DicomLoader
+  QaBridge -> DicomLoader
+  QaBridge -> MeshOps
+  QaBridge -> Project
+  QaBridge -> SplintOps
+  QaTool -> BridgeClient
+  RunQaSuite -> BridgeClient
+  SlicePane -> SliceViewport
+  SplintOps -> MeshOps
+  TestEraser -> EraserTool
+  TestLayoutManager -> LayoutManager
+  TestMeasurements -> Measurements
+  TestMeshOps -> MeshOps
+  TestScissors -> ScissorsTool
+  TestSplintOps -> MeshOps
+  TestSplintOps -> SplintOps
+  TestTransform -> MeshOps
+  TestTransform -> Scene
+  TestTransform -> TransformGizmoTool
+  UiSmoke -> App
+  UndoStack -> Scene
+}

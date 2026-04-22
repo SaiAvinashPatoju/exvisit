@@ -1,0 +1,16 @@
+[package]
+name = "exvisit-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless topological extraction CLI for .exv files."
+
+[dependencies]
+exvisit-core = { path = "../exvisit-core" }
+clap       = { workspace = true }
+anyhow     = { workspace = true }
+
+[[bin]]
+name = "exvisit-query"
+path = "src/main.rs"
+

@@ -1,0 +1,15 @@
+[package]
+name = "exvisit-viewport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Glass Viewport — wgpu + WASM ZUI renderer (Phase 5)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wgpu         = { workspace = true }
+wasm-bindgen = { workspace = true }
+log          = { workspace = true }
+
