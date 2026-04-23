@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exvisit"
-version = "0.4.0"
+version = "0.4.1"
 description = "Structural context compiler for AI coding agents — 73× token reduction via spatial .exv maps"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
@@ -80,14 +80,14 @@ exclude = ["bench*", "scratch*", "tests*", "rust*"]
 
 [tool.setuptools.package-data]
 exvisit = ["py.typed"]
+"exvisit._data" = ["*.json"]
 
 [tool.setuptools]
 include-package-data = true
 
 # ── Config file mapping (shipped alongside the package) ──────────────────────
-# blast_presets.json and blast_betas.json are read at runtime via Path(__file__)
-# resolution; they live in config/ next to the package root and are included
-# via MANIFEST.in for sdist builds.
+# blast_presets.json and blast_betas.json are vendored into exvisit._data so
+# locate/blast work from both source checkouts and installed wheels.
 
 # ── Ruff linting ──────────────────────────────────────────────────────────────
 [tool.ruff]

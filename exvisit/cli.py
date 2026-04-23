@@ -57,9 +57,10 @@ def cmd_graph(args):
 
 
 def cmd_verify(args):
-    src = Path(args.file).read_text(encoding="utf-8")
+    exvisit_path = Path(args.file)
+    src = exvisit_path.read_text(encoding="utf-8")
     doc = parse(src)
-    diags = verify(doc, args.repo)
+    diags = verify(doc, _infer_repo_root(doc, exvisit_path, args.repo))
     sys.stdout.write(format_report(diags))
     sys.exit(1 if any(d.kind in ("missing", "ghost") for d in diags) else 0)
 
@@ -68,9 +69,16 @@ def cmd_init(args):
     meta_out = None
     if args.out and not args.no_meta:
         meta_out = sidecar_path(Path(args.out))
-    out = scaffold_generate(args.repo, root_name=args.root_name, meta_out=meta_out)
     if args.out:
-        Path(args.out).write_text(out, encoding="utf-8")
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    out = scaffold_generate(
+        args.repo,
+        root_name=args.root_name,
+        meta_out=meta_out,
+        ignore_file=args.ignore_file,
+    )
+    if args.out:
+        _write_output(args.out, out)
         msg = f"wrote {args.out} ({len(out)} bytes)"
         if meta_out and meta_out.exists():
             msg += f"; wrote {meta_out}"
@@ -108,14 +116,21 @@ def _infer_repo_root(doc, exvisit_file: Path, repo_hint: str | None):
     return str(exvisit_file.resolve().parent)
 
 
+def _write_output(path_str: str, text: str) -> None:
+    path = Path(path_str)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
 def cmd_blast(args):
     exvisit_path = Path(args.file)
     src = exvisit_path.read_text(encoding="utf-8")
     doc = parse(src)
     text = _load_blast_text(args)
+    repo_root = _infer_repo_root(doc, exvisit_path, args.repo)
     bundle = build_blast_bundle(
         doc,
-        args.repo,
+        repo_root,
         text,
         preset_name=args.preset,
         config_path=args.config,
@@ -124,7 +139,7 @@ def cmd_blast(args):
     )
     output = render_blast_markdown(bundle, text) if args.format == "md" else bundle_to_json(bundle)
     if args.out:
-        Path(args.out).write_text(output, encoding="utf-8")
+        _write_output(args.out, output)
         print(f"wrote {args.out}")
         return
     sys.stdout.write(output)
@@ -143,7 +158,7 @@ def cmd_anchor(args):
     )
     output = render_anchor_text(report) if args.format == "text" else anchor_report_to_json(report)
     if args.out:
-        Path(args.out).write_text(output, encoding="utf-8")
+        _write_output(args.out, output)
         print(f"wrote {args.out}")
         return
     sys.stdout.write(output)
@@ -157,7 +172,8 @@ def cmd_locate(args):
     text = _load_blast_text(args)
     meta = load_meta_for(exvisit_path)
     config = load_v2_config()
-    scored = score_nodes_v2(doc, Path(args.repo), text, meta, config)
+    repo_root = _infer_repo_root(doc, exvisit_path, args.repo)
+    scored = score_nodes_v2(doc, Path(repo_root), text, meta, config)
     if not scored:
         sys.stderr.write("locate: no candidates\n")
         sys.exit(2)
@@ -192,7 +208,7 @@ def cmd_locate(args):
             lines.append(f"    reasons={', '.join(s.reasons[:6])}")
         out_text = "\n".join(lines) + "\n"
     if args.out:
-        Path(args.out).write_text(out_text, encoding="utf-8")
+        _write_output(args.out, out_text)
         print(f"wrote {args.out}")
     else:
         sys.stdout.write(out_text)
@@ -271,19 +287,24 @@ def main(argv=None):
     pg.add_argument("file"); pg.set_defaults(func=cmd_graph)
 
     pv = sub.add_parser("verify", help="cross-check -> edges against real imports (SPEC-001)")
-    pv.add_argument("file"); pv.add_argument("--repo", required=True)
+    pv.add_argument("file")
+    pv.add_argument("--repo", default=None,
+                    help="repo root (optional; inferred from the .exv root when omitted)")
     pv.set_defaults(func=cmd_verify)
 
     pi = sub.add_parser("init", help="scaffold draft .exv from a repo (SPEC-003)")
     pi.add_argument("--repo", required=True); pi.add_argument("--out", default=None)
     pi.add_argument("--root-name", default="App")
+    pi.add_argument("--ignore-file", default=None,
+                    help="path to a .exvisitignore-style file (default: <repo>/.exvisitignore)")
     pi.add_argument("--no-meta", action="store_true",
                     help="skip writing the .meta.json sidecar (legacy v1-only output)")
     pi.set_defaults(func=cmd_init)
 
     pb = sub.add_parser("blast", help="build a blast-radius context bundle from issue/error text")
     pb.add_argument("file")
-    pb.add_argument("--repo", required=True)
+    pb.add_argument("--repo", default=None,
+                    help="repo root (optional; inferred from the .exv root when omitted)")
     pb.add_argument("--issue-text", default=None)
     pb.add_argument("--issue-file", default=None)
     pb.add_argument("--error-file", default=None)
@@ -298,7 +319,8 @@ def main(argv=None):
     pl = sub.add_parser("locate",
                         help="vNext: rank nodes via scoring v2 and emit top-K anchors with confidence")
     pl.add_argument("file")
-    pl.add_argument("--repo", required=True)
+    pl.add_argument("--repo", default=None,
+                    help="repo root (optional; inferred from the .exv root when omitted)")
     pl.add_argument("--issue-text", default=None)
     pl.add_argument("--issue-file", default=None)
     pl.add_argument("--error-file", default=None)

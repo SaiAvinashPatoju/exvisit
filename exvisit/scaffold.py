@@ -17,6 +17,7 @@ Output is deliberately minimal; user is expected to refine bounds + state machin
 """
 from __future__ import annotations
 import ast
+import fnmatch
 import os
 import re
 import warnings
@@ -25,8 +26,12 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .graph_meta import DEFAULT_EDGE_PRIORS, GraphMeta, NodeMeta, pagerank, sidecar_path
 
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv",
-             "node_modules", "build", "dist", "target"}
+SKIP_DIRS = {
+    ".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".tox", ".nox", ".venv", "venv", "env", "ENV",
+    "node_modules", ".next", "build", "dist", "target", "site-packages",
+    ".eggs",
+}
 IMPORT_RE = re.compile(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_\.]*)", re.MULTILINE)
 FROM_RE = re.compile(r"^\s*from\s+([A-Za-z_][A-Za-z0-9_\.]*)\s+import\s+(.+)$", re.MULTILINE)
 
@@ -61,11 +66,76 @@ def _camel(name: str) -> str:
 
 
 def _scan(repo: Path) -> Dict[Path, List[Path]]:
+    return _scan_with_ignores(repo, ignore_file=None)
+
+
+def _load_ignore_patterns(repo: Path, ignore_file: Optional[str]) -> List[str]:
+    candidate = Path(ignore_file) if ignore_file else repo / ".exvisitignore"
+    if not candidate.exists():
+        return []
+    patterns: List[str] = []
+    for raw in candidate.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append(line.replace("\\", "/").rstrip("/"))
+    return patterns
+
+
+def _matches_ignore(rel_posix: str, name: str, patterns: List[str]) -> bool:
+    rel_norm = rel_posix.replace("\\", "/").lstrip("./")
+    for pattern in patterns:
+        pat = pattern.replace("\\", "/").lstrip("./")
+        if fnmatch.fnmatch(rel_norm, pat) or fnmatch.fnmatch(name, pat):
+            return True
+        if fnmatch.fnmatch(rel_norm, pat + "/*"):
+            return True
+    return False
+
+
+def _looks_like_virtualenv(path: Path) -> bool:
+    return (
+        (path / "pyvenv.cfg").exists()
+        or (path / "Lib" / "site-packages").exists()
+        or (path / "Scripts" / "activate").exists()
+        or (path / "bin" / "activate").exists()
+    )
+
+
+def _should_skip_dir(repo: Path, parent: Path, name: str, patterns: List[str]) -> bool:
+    candidate = parent / name
+    rel_posix = candidate.relative_to(repo).as_posix()
+    if name in SKIP_DIRS:
+        return True
+    if name.startswith(".exvisit-") or name.endswith(".egg-info"):
+        return True
+    if _looks_like_virtualenv(candidate):
+        return True
+    if _matches_ignore(rel_posix, name, patterns):
+        return True
+    return False
+
+
+def _should_skip_file(repo: Path, file_path: Path, patterns: List[str]) -> bool:
+    rel_posix = file_path.relative_to(repo).as_posix()
+    return _matches_ignore(rel_posix, file_path.name, patterns)
+
+
+def _scan_with_ignores(repo: Path, ignore_file: Optional[str]) -> Dict[Path, List[Path]]:
     """Return {package_dir: [py_files]} for all dirs that directly contain .py files."""
+    patterns = _load_ignore_patterns(repo, ignore_file)
     packages: Dict[Path, List[Path]] = {}
     for dirpath, dirnames, filenames in os.walk(repo):
-        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
-        py_files = [Path(dirpath) / name for name in filenames if name.endswith(".py")]
+        parent = Path(dirpath)
+        dirnames[:] = [
+            name for name in dirnames
+            if not _should_skip_dir(repo, parent, name, patterns)
+        ]
+        py_files = [
+            parent / name
+            for name in filenames
+            if name.endswith(".py") and not _should_skip_file(repo, parent / name, patterns)
+        ]
         if py_files:
             packages[Path(dirpath)] = sorted(py_files)
     return packages
@@ -232,11 +302,11 @@ def _line_range(py: Path) -> Tuple[int, int]:
 
 
 def generate(repo: str, root_name: str = "App", fast_imports: bool = False,
-             meta_out: Optional[Path] = None) -> str:
+             meta_out: Optional[Path] = None, ignore_file: Optional[str] = None) -> str:
     """Generate `.exv` text from a repo. If `meta_out` is given, also write
     a sidecar `<meta_out>` containing the GraphMeta JSON."""
     r = Path(repo)
-    packages = _scan(r)
+    packages = _scan_with_ignores(r, ignore_file)
     if not packages:
         return f"@L0 {root_name} [0,0,100,100] {{\n}}\n"
 
@@ -418,10 +488,16 @@ def generate(repo: str, root_name: str = "App", fast_imports: bool = False,
 
 
 def generate_with_meta(repo: str, exv_out: Path, root_name: str = "App",
-                       fast_imports: bool = False) -> Tuple[str, Path]:
+                       fast_imports: bool = False, ignore_file: Optional[str] = None) -> Tuple[str, Path]:
     """Convenience: generate `.exv` and write both `.exv` and sidecar `.meta.json`."""
     meta_path = sidecar_path(exv_out)
-    text = generate(repo, root_name=root_name, fast_imports=fast_imports, meta_out=meta_path)
+    text = generate(
+        repo,
+        root_name=root_name,
+        fast_imports=fast_imports,
+        meta_out=meta_path,
+        ignore_file=ignore_file,
+    )
     exv_out.write_text(text, encoding="utf-8")
     return text, meta_path
 

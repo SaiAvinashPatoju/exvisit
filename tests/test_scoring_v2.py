@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from exvisit import parse
+from exvisit._data import read_text as read_packaged_data
 from exvisit.blast import build_blast_bundle
 from exvisit.graph_meta import GraphMeta, load_for, sidecar_path
 from exvisit.scaffold import generate as scaffold_generate, generate_with_meta
@@ -62,6 +63,8 @@ def _mk_django_like(root: Path) -> None:
         "        assert CharField().get_default() is None\n",
         encoding="utf-8",
     )
+
+
 
 
 def test_scaffold_includes_registry_init():
@@ -239,3 +242,8 @@ def test_force_v1_via_scoring_arg():
         )
         # v1 should not crash even with meta available
         assert bundle.anchor
+
+
+def test_packaged_runtime_config_is_available():
+    assert '"betas"' in read_packaged_data("blast_betas.json")
+    assert '"presets"' in read_packaged_data("blast_presets.json")

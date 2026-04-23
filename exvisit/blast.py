@@ -17,12 +17,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from ._data import read_text as _read_packaged_data
 from .ast import exvisitDoc, Node
 from .graph_meta import GraphMeta, load_for as _load_meta_for
 from . import scoring_v2 as _v2
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "blast_presets.json"
+DEFAULT_CONFIG_NAME = "blast_presets.json"
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "bug", "by", "can",
     "case", "does", "error", "for", "from", "get", "if", "in", "into",
@@ -103,8 +104,10 @@ def estimate_tokens(text: str) -> int:
 
 
 def load_blast_presets(config_path: Optional[str] = None) -> Dict[str, BlastPreset]:
-    path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    if config_path:
+        payload = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    else:
+        payload = json.loads(_read_packaged_data(DEFAULT_CONFIG_NAME))
     presets: Dict[str, BlastPreset] = {}
     for name, cfg in payload.get("presets", {}).items():
         presets[name] = BlastPreset(
@@ -543,6 +546,36 @@ def _inject_precision_guards(
         )
 
 
+def _weak_neighbor_penalty(
+    scored_node: _v2.ScoredNode,
+    meta: Optional[GraphMeta],
+) -> float:
+    if meta is None:
+        return 1.0
+    node_meta = meta.nodes.get(scored_node.node.fqn)
+    if node_meta is None:
+        return 1.0
+
+    strong_signal = (
+        scored_node.components.get("explicit_path", 0.0) > 0.0
+        or scored_node.components.get("path", 0.0) > 0.0
+        or scored_node.components.get("stem", 0.0) > 0.0
+        or scored_node.components.get("symbol_exact", 0.0) > 0.0
+        or scored_node.components.get("mgmt_command", 0.0) > 0.0
+        or scored_node.components.get("upper_const", 0.0) > 0.0
+        or abs(scored_node.components.get("domain", 0.0)) >= 0.4
+    )
+    if strong_signal:
+        return 1.0
+    if node_meta.kind == "registry":
+        return 0.18
+    if node_meta.kind == "test":
+        return 0.25
+    if node_meta.kind == "migration":
+        return 0.20
+    return 1.0
+
+
 def _select_v2_nodes(
     doc: exvisitDoc,
     meta: Optional[GraphMeta],
@@ -593,18 +626,19 @@ def _select_v2_nodes(
             if scored_node is None:
                 continue
             idx = rank_index.get(candidate.fqn, 10**9)
-            if idx > rank_cap and candidate.structural_score < 0.12:
+            adjusted_structural = candidate.structural_score * _weak_neighbor_penalty(scored_node, meta)
+            if idx > rank_cap and adjusted_structural < 0.12:
                 continue
-            ranked_neighbors.append((candidate, scored_node, idx))
+            ranked_neighbors.append((candidate, scored_node, idx, adjusted_structural))
         ranked_neighbors.sort(
             key=lambda item: (
-                -item[0].structural_score,
+                -item[3],
                 item[2],
                 -item[1].score,
                 item[1].node.fqn,
             )
         )
-        for candidate, scored_node, _idx in ranked_neighbors:
+        for candidate, scored_node, _idx, _adjusted_structural in ranked_neighbors:
             if neighbor_budget <= 0:
                 break
             if candidate.fqn in selected_fqns:

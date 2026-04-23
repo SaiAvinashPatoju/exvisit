@@ -31,11 +31,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from ._data import read_text as _read_packaged_data
 from .ast import Node, exvisitDoc
 from .graph_meta import GraphMeta
 
 
-DEFAULT_BETAS_PATH = Path(__file__).resolve().parent.parent / "config" / "blast_betas.json"
+DEFAULT_BETAS_NAME = "blast_betas.json"
 
 
 @dataclass
@@ -58,8 +59,10 @@ class V2Config:
 
 
 def load_v2_config(path: Optional[Path] = None) -> V2Config:
-    p = path or DEFAULT_BETAS_PATH
-    payload = json.loads(p.read_text(encoding="utf-8"))
+    if path is not None:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    else:
+        payload = json.loads(_read_packaged_data(DEFAULT_BETAS_NAME))
     betas = {str(k): float(v) for k, v in payload["betas"].items()}
     th = payload.get("thresholds", {})
     return V2Config(

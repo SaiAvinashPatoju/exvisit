@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from exvisit.cli import _infer_repo_root
 from exvisit import parse, serialize, query, exvisitGraph
 from exvisit.ast import EdgeKind
 
@@ -126,6 +127,65 @@ def test_scaffold_sanitizes_non_identifier_filenames():
         assert "Util" in names
         assert "Util2" in names
         assert "N0001Initial" in names
+
+
+def test_scaffold_skips_virtualenv_like_dirs_and_exvisit_temp_dirs():
+    from tempfile import TemporaryDirectory
+    from exvisit.scaffold import generate as scaffold_generate
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pkg = root / "app"
+        pkg.mkdir()
+        (pkg / "main.py").write_text("from app.worker import run\n", encoding="utf-8")
+        (pkg / "worker.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+
+        smoke = root / ".exvisit-smoke"
+        smoke.mkdir()
+        (smoke / "pyvenv.cfg").write_text("home = fake\n", encoding="utf-8")
+        nested = smoke / "Lib" / "site-packages" / "pip" / "_internal" / "commands"
+        nested.mkdir(parents=True)
+        (nested / "debug.py").write_text("class DebugCommand: pass\n", encoding="utf-8")
+
+        text = scaffold_generate(str(root), root_name="App")
+
+        assert ".exvisit-smoke" not in text
+        assert "pip/_internal/commands/debug.py" not in text
+        assert "app/main.py" in text
+
+
+def test_scaffold_respects_dot_exvisitignore():
+    from tempfile import TemporaryDirectory
+    from exvisit.scaffold import generate as scaffold_generate
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".exvisitignore").write_text("generated\n", encoding="utf-8")
+
+        app = root / "app"
+        app.mkdir()
+        (app / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        generated = root / "generated"
+        generated.mkdir()
+        (generated / "noise.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+        text = scaffold_generate(str(root), root_name="App")
+
+        assert "app/main.py" in text
+        assert "generated/noise.py" not in text
+
+
+def test_infer_repo_root_defaults_to_exv_parent_when_repo_omitted():
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        exv = root / "sample.exv"
+        exv.write_text("@L0 App [0,0,100,100] {\n}\n", encoding="utf-8")
+
+        doc = parse(exv.read_text(encoding="utf-8"))
+        assert _infer_repo_root(doc, exv, None) == str(root.resolve())
 
 
 if __name__ == "__main__":
