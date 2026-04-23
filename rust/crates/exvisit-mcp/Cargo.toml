@@ -3,17 +3,22 @@ name = "exvisit-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "MCP JSON-RPC architect server — Phase 3."
+repository.workspace = true
+description = "MCP stdio server — wraps the Python exv CLI via subprocess."
 
 [dependencies]
-exvisit-core = { path = "../exvisit-core" }
-jsonrpsee  = { workspace = true }
+rmcp       = { workspace = true }
 tokio      = { workspace = true }
-serde      = { workspace = true }
 serde_json = { workspace = true }
 anyhow     = { workspace = true }
+log        = { workspace = true }
+env_logger = { workspace = true }
 
 [[bin]]
 name = "exvisit-mcp"
 path = "src/main.rs"
+
+# cargo-dist: opt this specific crate into distribution (workspace default is false).
+[package.metadata.dist]
+dist = true
 

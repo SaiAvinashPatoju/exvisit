@@ -180,4 +180,4 @@ See [setup.md](setup.md) for the full guide — prerequisites, virtual environme
 
 ## License
 
-MIT OR Apache-2.0 (your choice).
+Apache-2.0

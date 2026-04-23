@@ -13,4 +13,5 @@ pub mod parser;
 pub mod crdt;
 pub mod spatial;
 pub mod serialize;
+pub mod topology;
 

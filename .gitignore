@@ -24,7 +24,7 @@ MANIFEST
 # ── Rust ──────────────────────────────────────────────────────────────────────
 target/
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock is committed for binary crates (cargo-dist reproducible builds)
 
 # ── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/

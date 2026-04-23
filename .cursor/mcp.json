@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "exvisit": {
+      "command": "C:\\projects\\work\\atlas_pro\\rust\\target\\release\\exvisit-mcp.exe",
+      "args": [],
+      "env": {
+        "EXVISIT_PYTHON": "C:\\projects\\work\\atlas_pro\\.venv\\Scripts\\python.exe"
+      }
+    }
+  }
+}

@@ -12,7 +12,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/exvisit-pro/exvisit"
+repository = "https://github.com/SaiAvinashPatoju/exvisit"
 rust-version = "1.75"
 
 [workspace.dependencies]
@@ -27,8 +27,39 @@ clap            = { version = "4", features = ["derive"] }
 tokio           = { version = "1", features = ["full"] }
 tower-lsp       = "0.20"
 jsonrpsee       = { version = "0.22", features = ["server"] }
+rmcp            = { version = "1", features = ["server", "transport-io"] }
 wgpu            = "0.20"
 wasm-bindgen    = "0.2"
 log             = "0.4"
 env_logger      = "0.11"
+tree-sitter     = "0.22"
+
+# ── Release optimisations ──────────────────────────────────────────────────────
+# Strip debug symbols and enable thin-LTO so the distributed binary is as
+# small as possible. Thin-LTO cuts 20-30% off the final size vs. no LTO
+# without meaningfully increasing compile time.
+[profile.release]
+strip   = true          # remove debug/symbol tables (saves ~30% size on Linux)
+lto     = "thin"        # cross-crate inlining for dead-code elimination
+opt-level = 3
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.22.1"
+# CI backends to support
+ci = "github"
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to consider the binaries in a package for distribution (defaults true)
+dist = false
+# The installers to generate for each app
+installers = []
 
