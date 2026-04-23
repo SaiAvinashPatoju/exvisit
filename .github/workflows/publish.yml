@@ -20,9 +20,6 @@ jobs:
     name: Build distribution
     runs-on: ubuntu-latest
 
-    outputs:
-      hashes: ${{ steps.hash.outputs.hashes }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -36,26 +33,6 @@ jobs:
 
       - name: Build sdist and wheel
         run: python -m build
-
-      - name: Generate hashes for attestation
-        id: hash
-        run: |
-          cd dist
-          python3 << 'EOF'
-import hashlib
-import os
-import base64
-
-hashes = []
-for f in sorted([f for f in os.listdir(".") if f.endswith((".tar.gz", ".whl"))]):
-    with open(f, "rb") as fp:
-        h = hashlib.sha256(fp.read()).hexdigest()
-        hashes.append(f"{os.path.basename(f)}={h}")
-
-encoded = base64.b64encode("\n".join(hashes).encode()).decode()
-with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-    fh.write(f"hashes={encoded}\n")
-EOF
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
