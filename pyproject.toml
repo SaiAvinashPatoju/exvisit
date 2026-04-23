@@ -1,13 +1,13 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "exvisit"
 version = "0.4.0"
 description = "Structural context compiler for AI coding agents — 73× token reduction via spatial .exv maps"
 readme = "README.md"
-license = { text = "MIT OR Apache-2.0" }
+license = "MIT OR Apache-2.0"
 requires-python = ">=3.11"
 authors = [{ name = "ExVisit Contributors" }]
 keywords = [
@@ -17,8 +17,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -82,7 +80,9 @@ exclude = ["bench*", "scratch*", "tests*", "rust*"]
 
 [tool.setuptools.package-data]
 exvisit = ["py.typed"]
-"exvisit._data" = ["*.json"]
+
+[tool.setuptools]
+include-package-data = true
 
 # ── Config file mapping (shipped alongside the package) ──────────────────────
 # blast_presets.json and blast_betas.json are read at runtime via Path(__file__)

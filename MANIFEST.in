@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+recursive-include exvisit *.py
+recursive-include config *.json
+recursive-include spec *.md
+recursive-include examples *.exv *.atlas
