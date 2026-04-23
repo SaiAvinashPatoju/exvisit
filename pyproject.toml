@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "exvisit"
+version = "0.4.0"
+description = "Structural context compiler for AI coding agents — 73× token reduction via spatial .exv maps"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "ExVisit Contributors" }]
+keywords = [
+    "llm", "ai", "code-navigation", "swe-bench", "context-compression",
+    "ast", "graph", "spatial", "mcp", "agent",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# ── Core dependencies ─────────────────────────────────────────────────────────
+# Kept intentionally lean: no heavy ML deps required for core parse/blast/query.
+# Optional extras for benchmarking, embedding, and MCP are below.
+dependencies = [
+    "pathlib2>=2.3.7; python_version<'3.12'",  # stdlib shim, only on old Pythons
+]
+
+[project.optional-dependencies]
+# Benchmarking stack (token counting, model runners, dataset download)
+bench = [
+    "tiktoken>=0.7.0",
+    "datasets>=2.19.0",
+    "openai>=1.30.0",
+    "anthropic>=0.26.0",
+    "google-genai>=1.0.0",
+    "tqdm>=4.66.0",
+]
+# Rust extension (once exvisit-core is built via maturin)
+rust = [
+    "maturin>=1.5.0",
+]
+# MCP server for Claude Desktop / Cursor integration
+mcp = [
+    "mcp>=1.0.0",
+    "uvicorn>=0.30.0",
+    "fastapi>=0.111.0",
+]
+# All extras for contributors
+dev = [
+    "exvisit[bench,mcp]",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/exvisit/exvisit"
+Repository = "https://github.com/exvisit/exvisit"
+Issues = "https://github.com/exvisit/exvisit/issues"
+Changelog = "https://github.com/exvisit/exvisit/blob/main/CHANGELOG.md"
+
+# ── Entry points ──────────────────────────────────────────────────────────────
+# Both `exvisit` and the short alias `exv` map to the same CLI dispatcher.
+[project.scripts]
+exvisit = "exvisit.cli:main"
+exv     = "exvisit.cli:main"
+
+# ── Package discovery ─────────────────────────────────────────────────────────
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["exvisit*"]
+exclude = ["bench*", "scratch*", "tests*", "rust*"]
+
+[tool.setuptools.package-data]
+exvisit = ["py.typed"]
+"exvisit._data" = ["*.json"]
+
+# ── Config file mapping (shipped alongside the package) ──────────────────────
+# blast_presets.json and blast_betas.json are read at runtime via Path(__file__)
+# resolution; they live in config/ next to the package root and are included
+# via MANIFEST.in for sdist builds.
+
+# ── Ruff linting ──────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008", "UP007"]
+
+[tool.ruff.isort]
+known-first-party = ["exvisit"]
+
+# ── Mypy ──────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+exclude = ["bench/", "scratch/", "rust/"]
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["-q", "--tb=short"]

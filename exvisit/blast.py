@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import warnings
 from collections import Counter
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .ast import exvisitDoc, Node
+from .graph_meta import GraphMeta, load_for as _load_meta_for
+from . import scoring_v2 as _v2
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "blast_presets.json"
@@ -72,6 +75,14 @@ class BlastBundle:
     selection_reasons: List[BlastSelectionReason] = field(default_factory=list)
     snippets: List[BlastSnippet] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
+class _SpatialNeighbor:
+    fqn: str
+    structural_score: float
+    hop: int
+    via: str
 
 
 @dataclass
@@ -363,6 +374,301 @@ def _neighbors(doc: exvisitDoc, node_fqn: str, hops: int = 1, direction: str = "
     return result
 
 
+def _meta_weighted_neighbors(
+    doc: exvisitDoc,
+    meta: Optional[GraphMeta],
+    anchor_fqns: Sequence[str],
+    hops: int,
+    direction: str,
+) -> Dict[str, _SpatialNeighbor]:
+    if meta is None or not meta.edges_by_type or hops <= 0:
+        return {}
+
+    nodes_by_fqn = {node.fqn: node for node in doc.all_nodes()}
+    seed_fqns = [fqn for fqn in anchor_fqns if fqn in nodes_by_fqn]
+    if not seed_fqns:
+        return {}
+
+    out_adj: Dict[str, List[Tuple[str, float, str]]] = {}
+    in_adj: Dict[str, List[Tuple[str, float, str]]] = {}
+    for edge_type, pairs in meta.edges_by_type.items():
+        weight = float(meta.edge_priors.get(edge_type, 0.1))
+        if weight <= 0:
+            continue
+        for src, dst in pairs:
+            if src not in nodes_by_fqn or dst not in nodes_by_fqn:
+                continue
+            out_adj.setdefault(src, []).append((dst, weight, edge_type))
+            in_adj.setdefault(dst, []).append((src, weight, edge_type))
+
+    best: Dict[str, _SpatialNeighbor] = {}
+    frontier: Dict[str, float] = {fqn: 1.0 for fqn in seed_fqns}
+    anchor_set = set(seed_fqns)
+
+    for hop in range(1, hops + 1):
+        if not frontier:
+            break
+        next_frontier: Dict[str, Tuple[float, str]] = {}
+        hop_decay = 0.82 ** (hop - 1)
+        for src, carry in frontier.items():
+            edge_stream: List[Tuple[str, float, str]] = []
+            if direction in ("out", "both"):
+                edge_stream.extend(out_adj.get(src, []))
+            if direction in ("in", "both"):
+                edge_stream.extend(in_adj.get(src, []))
+            for dst, weight, edge_type in edge_stream:
+                if dst in anchor_set:
+                    continue
+                propagated = carry * weight * hop_decay
+                if propagated <= 0:
+                    continue
+                prev_frontier = next_frontier.get(dst)
+                if prev_frontier is None or propagated > prev_frontier[0]:
+                    next_frontier[dst] = (propagated, edge_type)
+                prev_best = best.get(dst)
+                if prev_best is None or propagated > prev_best.structural_score:
+                    best[dst] = _SpatialNeighbor(
+                        fqn=dst,
+                        structural_score=propagated,
+                        hop=hop,
+                        via=edge_type,
+                    )
+        frontier = {dst: score for dst, (score, _edge_type) in next_frontier.items()}
+    return best
+
+
+def _neighbor_budget(max_files: int, anchor_count: int, confidence: float, low_margin: bool) -> int:
+    remaining = max(0, max_files - anchor_count)
+    if remaining == 0:
+        return 0
+    if low_margin or anchor_count > 1:
+        return remaining
+    if confidence >= 0.55:
+        return min(1, remaining)
+    if confidence >= 0.40:
+        return min(2, remaining)
+    return min(3, remaining)
+
+
+def _sibling_budget(max_files: int, selected_count: int, confidence: float, low_margin: bool) -> int:
+    remaining = max(0, max_files - selected_count)
+    if remaining == 0:
+        return 0
+    if low_margin:
+        return min(1, remaining)
+    if confidence < 0.30:
+        return min(1, remaining)
+    return 0
+
+
+def _cluster_key(node: Node, meta: Optional[GraphMeta]) -> str:
+    if meta is not None:
+        node_meta = meta.nodes.get(node.fqn)
+        if node_meta and node_meta.cluster:
+            return node_meta.cluster
+    if node.src_path:
+        return str(Path(node.src_path).parent).replace("\\", "/")
+    return ""
+
+
+def _anchor_has_signal(
+    anchors: Sequence[_v2.ScoredNode],
+    component: str,
+    threshold: float = 0.5,
+) -> bool:
+    return any(abs(anchor.components.get(component, 0.0)) >= threshold for anchor in anchors)
+
+
+def _inject_precision_guards(
+    scored: Sequence[_v2.ScoredNode],
+    anchors: Sequence[_v2.ScoredNode],
+    selected_nodes: List[Node],
+    selected_fqns: Set[str],
+    neighbor_reasons: Dict[str, str],
+    max_files: int,
+) -> None:
+    if len(selected_nodes) >= max_files:
+        return
+
+    top_window = list(scored[: max(12, max_files * 4)])
+
+    def add_guard(predicate, reason: str, limit: int = 1) -> None:
+        remaining = max_files - len(selected_nodes)
+        if remaining <= 0:
+            return
+        added = 0
+        for scored_node in top_window:
+            if added >= min(limit, remaining):
+                break
+            node = scored_node.node
+            if node.fqn in selected_fqns:
+                continue
+            if not predicate(scored_node):
+                continue
+            selected_nodes.append(node)
+            selected_fqns.add(node.fqn)
+            neighbor_reasons[node.fqn] = reason
+            added += 1
+
+    if not _anchor_has_signal(anchors, "explicit_path"):
+        add_guard(
+            lambda s: s.components.get("explicit_path", 0.0) > 0.0,
+            "precision-guard: literal path cited in issue",
+        )
+    if not _anchor_has_signal(anchors, "mgmt_command"):
+        add_guard(
+            lambda s: s.components.get("mgmt_command", 0.0) > 0.0,
+            "precision-guard: management command named in issue",
+        )
+    if not _anchor_has_signal(anchors, "error_code"):
+        add_guard(
+            lambda s: s.components.get("error_code", 0.0) > 0.0,
+            "precision-guard: error/check code named in issue",
+        )
+    if not _anchor_has_signal(anchors, "upper_const"):
+        add_guard(
+            lambda s: s.components.get("upper_const", 0.0) > 0.0,
+            "precision-guard: settings constant named in issue",
+            limit=2,
+        )
+    if not _anchor_has_signal(anchors, "domain", threshold=0.4):
+        add_guard(
+            lambda s: abs(s.components.get("domain", 0.0)) >= 0.4 and (
+                s.components.get("stem", 0.0) > 0.0
+                or s.components.get("path", 0.0) > 0.0
+                or s.components.get("explicit_path", 0.0) > 0.0
+                or s.components.get("symbol_exact", 0.0) > 0.0
+            ),
+            "precision-guard: issue vocabulary points to a different subsystem",
+        )
+
+
+def _select_v2_nodes(
+    doc: exvisitDoc,
+    meta: Optional[GraphMeta],
+    scored: Sequence[_v2.ScoredNode],
+    anchors: Sequence[_v2.ScoredNode],
+    preset: BlastPreset,
+    confidence: float,
+    low_margin: bool,
+) -> Tuple[List[Node], Dict[str, str]]:
+    rank_map: Dict[str, _v2.ScoredNode] = {s.node.fqn: s for s in scored}
+    rank_index: Dict[str, int] = {s.node.fqn: idx for idx, s in enumerate(scored)}
+    selected_nodes: List[Node] = []
+    neighbor_reasons: Dict[str, str] = {}
+    selected_fqns: Set[str] = set()
+
+    for anchor in anchors:
+        if anchor.node.fqn in selected_fqns:
+            continue
+        selected_nodes.append(anchor.node)
+        selected_fqns.add(anchor.node.fqn)
+        if len(selected_nodes) >= preset.max_files:
+            return selected_nodes, neighbor_reasons
+
+    _inject_precision_guards(
+        scored,
+        anchors,
+        selected_nodes,
+        selected_fqns,
+        neighbor_reasons,
+        preset.max_files,
+    )
+
+    neighbor_budget = _neighbor_budget(preset.max_files, len(selected_nodes), confidence, low_margin)
+    primary_score = anchors[0].score if anchors else 0.0
+    rank_cap = max(6, preset.max_files * (3 if low_margin else 2))
+
+    meta_neighbors = _meta_weighted_neighbors(
+        doc,
+        meta,
+        [anchor.node.fqn for anchor in anchors],
+        preset.hops,
+        preset.direction,
+    )
+    if meta_neighbors:
+        ranked_neighbors = []
+        for candidate in meta_neighbors.values():
+            scored_node = rank_map.get(candidate.fqn)
+            if scored_node is None:
+                continue
+            idx = rank_index.get(candidate.fqn, 10**9)
+            if idx > rank_cap and candidate.structural_score < 0.12:
+                continue
+            ranked_neighbors.append((candidate, scored_node, idx))
+        ranked_neighbors.sort(
+            key=lambda item: (
+                -item[0].structural_score,
+                item[2],
+                -item[1].score,
+                item[1].node.fqn,
+            )
+        )
+        for candidate, scored_node, _idx in ranked_neighbors:
+            if neighbor_budget <= 0:
+                break
+            if candidate.fqn in selected_fqns:
+                continue
+            selected_nodes.append(scored_node.node)
+            selected_fqns.add(candidate.fqn)
+            neighbor_reasons[candidate.fqn] = (
+                f"typed-{candidate.via} edge within {candidate.hop}-hop spatial radius"
+            )
+            neighbor_budget -= 1
+    else:
+        keep_fqns: Set[str] = set()
+        for anchor in anchors:
+            keep_fqns |= _neighbors(doc, anchor.node.fqn, hops=preset.hops, direction=preset.direction)
+        fallback_neighbors = [
+            scored_node for scored_node in scored
+            if scored_node.node.fqn in keep_fqns and scored_node.node.fqn not in selected_fqns
+        ]
+        for scored_node in fallback_neighbors:
+            if neighbor_budget <= 0:
+                break
+            idx = rank_index.get(scored_node.node.fqn, 10**9)
+            if idx > rank_cap and scored_node.score <= 0:
+                continue
+            selected_nodes.append(scored_node.node)
+            selected_fqns.add(scored_node.node.fqn)
+            neighbor_reasons[scored_node.node.fqn] = (
+                f"within {preset.hops}-hop blast radius of {anchors[0].node.name}"
+            )
+            neighbor_budget -= 1
+
+    sibling_budget = _sibling_budget(preset.max_files, len(selected_nodes), confidence, low_margin)
+    if sibling_budget > 0:
+        selected_clusters = {
+            _cluster_key(node, meta)
+            for node in selected_nodes
+            if _cluster_key(node, meta)
+        }
+        ratio_floor = 0.60 if low_margin else 0.80
+        score_floor = primary_score * ratio_floor if primary_score > 0 else 0.0
+        for scored_node in scored:
+            if sibling_budget <= 0:
+                break
+            node = scored_node.node
+            if node.fqn in selected_fqns or not node.src_path:
+                continue
+            if Path(node.src_path).name == "__init__.py":
+                continue
+            cluster = _cluster_key(node, meta)
+            if cluster not in selected_clusters:
+                continue
+            if scored_node.score < score_floor:
+                continue
+            idx = rank_index.get(node.fqn, 10**9)
+            if idx > max(8, preset.max_files * 3):
+                continue
+            selected_nodes.append(node)
+            selected_fqns.add(node.fqn)
+            neighbor_reasons[node.fqn] = "same-cluster fallback near anchor score"
+            sibling_budget -= 1
+
+    return selected_nodes[: preset.max_files], neighbor_reasons
+
+
 def _score_nodes(doc: exvisitDoc, repo_root: Path, text: str) -> List[Tuple[int, Node, List[str]]]:
     code_terms, keywords = extract_issue_terms(text)
     trace_frames = extract_trace_frames(text)
@@ -372,6 +678,9 @@ def _score_nodes(doc: exvisitDoc, repo_root: Path, text: str) -> List[Tuple[int,
     range_cache: Dict[str, Dict[str, Tuple[int, int]]] = {}
     scored: List[Tuple[int, Node, List[str]]] = []
 
+    config_heuristics = {"permission", "permissions", "settings", "default", "config", "configuration", "upload", "env", "environ"}
+    has_config_term = any(kw in config_heuristics for kw in keywords)
+
     for node in doc.all_nodes():
         src_path = (node.src_path or "").lower()
         src_name = Path(node.src_path or "").name.lower()
@@ -379,6 +688,12 @@ def _score_nodes(doc: exvisitDoc, repo_root: Path, text: str) -> List[Tuple[int,
         ns = node.ns_path.lower()
         score = 0
         reasons: List[str] = []
+        
+        if has_config_term:
+            if src_name in ("settings.py", "global_settings.py", "__init__.py", "config.py") or "conf/" in src_path or hasattr(node, "node_type") and node.node_type == "config":
+                score += 50
+                reasons.append("config-heuristic-boost")
+
         if node.src_path and Path(node.src_path).stem.lower() in lowered:
             score += 8
             reasons.append("file-stem-in-text")
@@ -463,6 +778,17 @@ def _score_nodes(doc: exvisitDoc, repo_root: Path, text: str) -> List[Tuple[int,
                 score += 1
                 reasons.append("keyword-in-namespace")
 
+        # --- FIX 1: Test file penalty ---
+        # Test files frequently match issue keywords but are almost never the
+        # oracle (gold) file.  Penalise heavily unless the issue is explicitly
+        # about test infrastructure.
+        if score > 0 and src_path and 'tests/' in src_path.replace('\\', '/'):
+            test_infra_terms = {'testcase', 'test_runner', 'runtests', 'pytest',
+                                'unittest', 'test suite', 'test framework'}
+            if not any(t in lowered for t in test_infra_terms):
+                score = max(0, score - 40)
+                reasons.append("test-file-penalty")
+
         if score > 0:
             scored.append((score, node, reasons))
 
@@ -476,12 +802,46 @@ def build_blast_bundle(
     text: str,
     preset_name: str = "test-fix",
     config_path: Optional[str] = None,
+    exvisit_path: Optional[str] = None,
+    meta: Optional[GraphMeta] = None,
+    scoring: Optional[str] = None,
 ) -> BlastBundle:
+    """Build a blast context bundle for the given issue text.
+
+    `scoring` controls ranker selection:
+      - "v2"   : log-linear multi-signal ranker (requires `meta` or sidecar)
+      - "v1"   : legacy heuristic ranker (current behavior)
+      - None   : auto — v2 if meta is provided/loadable, else v1.
+    Env var `EXVISIT_SCORING` overrides if set.
+    """
+    if preset_name == "test-fix":
+        lowered_text = text.lower()
+        if "traceback" in lowered_text or "crash" in lowered_text or "exception" in lowered_text or "error" in lowered_text:
+            preset_name = "crash-fix"
+        elif "test" in lowered_text or "assert" in lowered_text or "failure" in lowered_text:
+            preset_name = "test-fix"
+        else:
+            preset_name = "issue-fix"
+
     repo = Path(repo_root)
     presets = load_blast_presets(config_path)
     preset = presets.get(preset_name, presets.get("default"))
     if preset is None:
         raise KeyError("no blast presets available")
+
+    # ---- meta loading -----------------------------------------------------
+    if meta is None and exvisit_path:
+        try:
+            meta = _load_meta_for(Path(exvisit_path))
+        except Exception:
+            meta = None
+
+    scoring_mode = (os.environ.get("EXVISIT_SCORING") or scoring or "").lower()
+    if not scoring_mode:
+        scoring_mode = "v2" if meta is not None else "v1"
+
+    if scoring_mode == "v2":
+        return _build_bundle_v2(doc, repo, text, preset, meta)
 
     ranked = rank_nodes_for_text(doc, repo, text)
     if not ranked:
@@ -502,6 +862,39 @@ def build_blast_bundle(
         return (node.fqn != anchor.fqn, -same_file, -match_score, node.fqn)
 
     selected_nodes = sorted(neighbors, key=neighbor_sort_key)[:preset.max_files]
+
+    # --- FIX 3: Sibling file expansion ---
+    # When blast picks the right directory but wrong file, include other scored
+    # files from the same directory to capture near-misses.
+    # Exclude __init__.py from siblings (they're too generic and flood results).
+    selected_dirs = set()
+    for node in selected_nodes:
+        if node.src_path:
+            selected_dirs.add(str(Path(node.src_path).parent).replace('\\', '/'))
+    keep_fqn_set = {n.fqn for n in selected_nodes}
+    sibling_candidates: List[Tuple[int, Node]] = []
+    for other in doc.all_nodes():
+        if other.fqn in keep_fqn_set or not other.src_path:
+            continue
+        # Skip __init__.py as siblings — they dilute precision
+        if Path(other.src_path).name == '__init__.py':
+            continue
+        # Skip test files as siblings
+        if 'tests/' in other.src_path.replace('\\', '/'):
+            continue
+        other_dir = str(Path(other.src_path).parent).replace('\\', '/')
+        if other_dir in selected_dirs:
+            other_score = rank_map.get(other.fqn, (0, []))[0]
+            if other_score >= 5:  # require minimum relevance
+                sibling_candidates.append((other_score, other))
+    sibling_candidates.sort(key=lambda x: -x[0])
+    sibling_budget = 2  # allow up to 2 extra sibling files
+    for sib_score, sib in sibling_candidates:
+        if sibling_budget <= 0:
+            break
+        selected_nodes.append(sib)
+        keep_fqn_set.add(sib.fqn)
+        sibling_budget -= 1
     selected_files: List[str] = []
     snippets: List[BlastSnippet] = []
     selection_reasons: List[BlastSelectionReason] = [
@@ -566,6 +959,123 @@ def build_blast_bundle(
 
 def bundle_to_json(bundle: BlastBundle) -> str:
     return json.dumps(asdict(bundle), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Scoring v2 wrapper — builds a BlastBundle using the log-linear ranker.
+# ---------------------------------------------------------------------------
+def _build_bundle_v2(
+    doc: exvisitDoc,
+    repo: Path,
+    text: str,
+    preset: BlastPreset,
+    meta: Optional[GraphMeta],
+) -> BlastBundle:
+    config = _v2.load_v2_config()
+    scored = _v2.score_nodes_v2(doc, repo, text, meta, config)
+    if not scored:
+        raise KeyError("scoring v2 produced no scored nodes")
+
+    anchors, confidence, low_margin = _v2.select_anchors(scored, config)
+    primary = anchors[0]
+    selection_reasons: List[BlastSelectionReason] = [
+        BlastSelectionReason(
+            node_id=primary.node.fqn,
+            phase="anchor",
+            reason=("low-margin top-K; " if low_margin else "") + ", ".join(primary.reasons[:5]) or "v2 top-ranked",
+            score=int(round(primary.score * 100)),
+        )
+    ]
+    if low_margin:
+        for alt in anchors[1:]:
+            selection_reasons.append(
+                BlastSelectionReason(
+                    node_id=alt.node.fqn,
+                    phase="alt-anchor",
+                    reason="margin-tied: " + ", ".join(alt.reasons[:4]),
+                    score=int(round(alt.score * 100)),
+                )
+            )
+
+    rank_map: Dict[str, _v2.ScoredNode] = {s.node.fqn: s for s in scored}
+    selected_nodes, neighbor_reasons = _select_v2_nodes(
+        doc,
+        meta,
+        scored,
+        anchors,
+        preset,
+        confidence,
+        low_margin,
+    )
+    anchor_fqns = {a.node.fqn for a in anchors}
+
+    selected_files: List[str] = []
+    snippets: List[BlastSnippet] = []
+    seen_files: Set[str] = set()
+    for n in selected_nodes:
+        file_path = resolve_repo_file(repo, n.src_path)
+        if file_path is None:
+            continue
+        rel = file_path.relative_to(repo).as_posix()
+        if rel in seen_files:
+            continue
+        seen_files.add(rel)
+        selected_files.append(rel)
+        if n.fqn not in anchor_fqns:
+            sn = rank_map.get(n.fqn)
+            reasons_txt = ", ".join(sn.reasons[:3]) if sn else ""
+            selection_reasons.append(
+                BlastSelectionReason(
+                    node_id=n.fqn,
+                    phase="neighbor",
+                    reason=(reasons_txt + "; " if reasons_txt else "")
+                    + neighbor_reasons.get(
+                        n.fqn,
+                        f"within {preset.hops}-hop blast radius of {primary.node.name}",
+                    ),
+                    score=int(round((sn.score if sn else 0.0) * 100)),
+                )
+            )
+        if len(snippets) < preset.max_snippets:
+            label, code = choose_best_snippet(
+                file_path, text, preset.max_snippet_lines, line_range=n.line_range
+            )
+            reason = (
+                "anchor file" if n.fqn == primary.node.fqn
+                else ("alt anchor" if n.fqn in anchor_fqns
+                      else f"blast neighbor of {primary.node.name}")
+            )
+            snippets.append(BlastSnippet(file_path=rel, label=label, reason=reason, code=code))
+
+    selected_node_ids = [n.fqn for n in selected_nodes]
+    omitted_node_count = max(0, len(doc.all_nodes()) - len(selected_node_ids))
+    omitted_file_count = max(
+        0, len({n.src_path for n in doc.all_nodes() if n.src_path}) - len(selected_files)
+    )
+    token_estimate = estimate_tokens(text) + sum(estimate_tokens(s.code) for s in snippets)
+
+    bundle_warnings: List[str] = []
+    if meta is None:
+        bundle_warnings.append("no meta sidecar — using inferred kinds; PageRank/structural priors disabled")
+    if low_margin:
+        bundle_warnings.append(
+            f"low-confidence anchor (margin<{config.anchor_margin}); returning {len(anchors)} candidates"
+        )
+
+    return BlastBundle(
+        preset=preset.name,
+        anchor=primary.node.fqn,
+        anchor_file=primary.node.src_path or "",
+        confidence=confidence,
+        selected_nodes=selected_node_ids,
+        selected_files=selected_files,
+        omitted_node_count=omitted_node_count,
+        omitted_file_count=omitted_file_count,
+        token_estimate=token_estimate,
+        selection_reasons=selection_reasons,
+        snippets=snippets,
+        warnings=bundle_warnings,
+    )
 
 
 def render_blast_markdown(bundle: BlastBundle, context_text: str) -> str:

@@ -1,0 +1,19 @@
+# Ensure shell scripts always use LF line endings (bash breaks on CRLF)
+*.sh text eol=lf
+
+# Python source — normalize to LF
+*.py text eol=lf
+
+# Rust source
+*.rs text eol=lf
+*.toml text eol=lf
+
+# Markdown / text — normalize, let git handle checkout endings
+*.md text
+*.txt text
+*.json text
+
+# Binary — never convert
+*.png binary
+*.jpg binary
+*.wasm binary

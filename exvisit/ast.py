@@ -22,6 +22,7 @@ class Node:
     line_range: Optional[LineRange] = None
     states: List[str] = field(default_factory=list)  # ordered state machine
     ns_path: str = ""  # filled by parser: dotted namespace path this node lives in
+    node_type: str = "code"
 
     @property
     def fqn(self) -> str:

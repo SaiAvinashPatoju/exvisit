@@ -111,9 +111,9 @@ RUN_SCRIPT_TEMPLATE = """#!/bin/sh
 set -eu
 
 docker build -t exvisit-mini-swe:{case_id} .
-docker run --rm -it \
-  -v "{exvisit_host_path}:{exvisit_mount_path}:ro" \
-  -v "{repo_host_path}:{input_repo_mount}:ro" \
+docker run --rm -it --memory=18g \\
+  -v "{exvisit_host_path}:{exvisit_mount_path}:ro" \\
+  -v "{repo_host_path}:{input_repo_mount}:ro" \\
   exvisit-mini-swe:{case_id}
 """
 
@@ -168,7 +168,7 @@ def materialize_sandbox(case: BenchmarkCase, out_dir: Path, base_image: str = DE
     run_script_path.write_text(
         RUN_SCRIPT_TEMPLATE.format(
             case_id=case.case_id,
-            exvisit_host_path=Path(case.exv_path or "").resolve().as_posix(),
+            exvisit_host_path=Path(case.exvisit_path or "").resolve().as_posix(),
             repo_host_path=Path(case.repo_path).resolve().as_posix(),
             exvisit_mount_path=exvisit_MOUNT_PATH,
             input_repo_mount=INPUT_REPO_MOUNT,
@@ -181,7 +181,7 @@ def materialize_sandbox(case: BenchmarkCase, out_dir: Path, base_image: str = DE
         "repo_path": case.repo_path,
         "base_commit": case.base_commit,
         "issue_text": case.issue_text,
-        "exvisit_path": case.exv_path,
+        "exvisit_path": case.exvisit_path,
         "base_image": base_image,
     }
     (out_dir / "case.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")

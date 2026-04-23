@@ -29,6 +29,7 @@ TOKEN_RE = re.compile(
     (?P<RBRACE>\})                    |
     (?P<COMMA>,)                      |
     (?P<LINELOC>lines=\d+\.\.\d+)   |
+    (?P<TYPE_TAG>type:[A-Za-z0-9_]+) |
     (?P<STRING>"[^"\n]*")             |
     (?P<NUMBER>-?\d+)                 |
     # PATH first when it clearly contains path-ish chars (slash or wildcard)
@@ -163,6 +164,7 @@ class _P:
         src_path = None
         line_range = None
         states: List[str] = []
+        node_type = "code"
         # optional src (PATH or IDENT-like token) and optional state machine
         while True:
             t = self.peek()
@@ -177,10 +179,13 @@ class _P:
                 start, end = raw.split("..", 1)
                 line_range = (int(start), int(end))
                 continue
+            if t.kind == "TYPE_TAG":
+                node_type = self.eat("TYPE_TAG").val[len("type:"):]
+                continue
             if t.kind == "LBRACE":
                 states = self.parse_state_machine(); continue
             break
-        return Node(name=name, bounds=bounds, src_path=src_path, line_range=line_range, states=states, ns_path=ns_path)
+        return Node(name=name, bounds=bounds, src_path=src_path, line_range=line_range, states=states, ns_path=ns_path, node_type=node_type)
 
     @staticmethod
     def _looks_like_path(s: str) -> bool:

@@ -2,8 +2,8 @@
   "version": 1,
   "presets": {
     "default": {
-      "max_files": 2,
-      "max_snippets": 2,
+      "max_files": 4,
+      "max_snippets": 3,
       "hops": 1,
       "max_snippet_lines": 80,
       "direction": "both",
@@ -11,8 +11,8 @@
       "summary_budget_tokens": 700
     },
     "test-fix": {
-      "max_files": 3,
-      "max_snippets": 3,
+      "max_files": 5,
+      "max_snippets": 4,
       "hops": 2,
       "max_snippet_lines": 100,
       "direction": "both",
@@ -20,8 +20,8 @@
       "summary_budget_tokens": 900
     },
     "issue-fix": {
-      "max_files": 3,
-      "max_snippets": 4,
+      "max_files": 5,
+      "max_snippets": 5,
       "hops": 2,
       "max_snippet_lines": 120,
       "direction": "both",
@@ -29,8 +29,8 @@
       "summary_budget_tokens": 1100
     },
     "crash-fix": {
-      "max_files": 4,
-      "max_snippets": 5,
+      "max_files": 6,
+      "max_snippets": 6,
       "hops": 3,
       "max_snippet_lines": 140,
       "direction": "both",

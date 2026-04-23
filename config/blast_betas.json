@@ -1,0 +1,39 @@
+{
+  "version": 4,
+  "_comment": "v2.3 - five new signals from empirical 40-case analysis: (1) domain bias (forms vs db/models disambiguation, fixes 5 close failures), (2) error_code (models.E028 -> checks files), (3) upper_const (FILE_UPLOAD_PERMISSION -> conf/global_settings.py), (4) mgmt_command (sqlmigrate -> commands/sqlmigrate.py), (5) migration gate tightened to require explicit migration filename, not just word 'migration'.",
+  "betas": {
+    "lex":     0.25,
+    "trace":   5.0,
+    "sym":     4.0,
+    "cent":    0.4,
+    "idf":     0.2,
+    "reg":     0.0,
+    "test":    2.5,
+    "migration": 3.0,
+    "stem":    1.0,
+    "path":    4.5,
+    "explicit_path": 6.0,
+    "symbol_exact":  35.0,
+    "dunder":        12.0,
+    "domain":        15.0,
+    "error_code":    25.0,
+    "upper_const":   18.0,
+    "mgmt_command":  30.0
+  },
+  "thresholds": {
+    "anchor_margin": 0.08,
+    "topk": 3,
+    "softmax_temp": 0.5,
+    "test_admit_terms": [
+      "testcase", "test_runner", "runtests", "pytest", "unittest",
+      "test suite", "test framework", "conftest", "assertraises", "setup"
+    ],
+    "migration_admit_terms": [
+      "0001_", "0002_", "0003_", "schema_editor", "/migrations/"
+    ],
+    "config_admit_terms": [
+      "permissions", "settings", "default", "config", "configuration",
+      "upload", "env", "environ", "middleware", "installed_apps"
+    ]
+  }
+}

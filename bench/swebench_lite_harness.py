@@ -37,6 +37,7 @@ from exvisit import parse, query  # noqa: E402
 from exvisit.blast import build_blast_bundle  # noqa: E402
 from exvisit.ast import exvisitDoc, Node  # noqa: E402
 from exvisit.scaffold import generate as scaffold_generate  # noqa: E402
+from exvisit.graph_meta import sidecar_path  # noqa: E402
 
 
 STOPWORDS = {
@@ -628,13 +629,17 @@ def run_runner_command(
 ) -> RunnerExecution:
     repo_root = Path(workspace_path or case.repo_path)
     mapping = {
-        "repo_path": str(repo_root),
-        "exvisit_path": exvisit_path or "",
+        "repo_path": repo_root.as_posix(),
+        "exvisit_path": Path(exvisit_path or "").as_posix(),
         "issue_text": case.issue_text,
         "case_id": case.case_id,
-        "workspace_path": str(repo_root),
+        "workspace_path": repo_root.as_posix(),
     }
     command = template.format(**mapping)
+    import os
+    with open("scratch/model_debug.txt", "w") as f:
+        f.write(f"exvisit_MODEL='{os.environ.get('exvisit_MODEL')}'\n")
+        f.write(f"command='{command}'\n")
     proc = subprocess.run(command, shell=True, text=True, capture_output=True)
     notes: List[str] = []
     if proc.stdout.strip():
@@ -713,7 +718,7 @@ def control_strategy(
         execution = run_runner_command(
             runner_cmd,
             case,
-            case.exv_path,
+            case.exvisit_path,
             pricing=pricing,
             trajectory_template=trajectory_template,
             workspace_path=workspace_path,
@@ -754,12 +759,18 @@ def exvisit_strategy(
     trajectory_template: Optional[str] = None,
     workspace_path: Optional[str] = None,
 ) -> StrategyResult:
-    if not case.exv_path:
+    if not case.exvisit_path:
         raise ValueError(f"case {case.case_id} has no exvisit_path")
     repo_root = Path(case.repo_path)
-    exvisit_src = Path(case.exv_path).read_text(encoding="utf-8")
+    exvisit_src = Path(case.exvisit_path).read_text(encoding="utf-8")
     doc = parse(exvisit_src)
-    bundle = build_blast_bundle(doc, case.repo_path, case.issue_text, preset_name="test-fix")
+    bundle = build_blast_bundle(
+        doc,
+        case.repo_path,
+        case.issue_text,
+        preset_name="test-fix",
+        exvisit_path=case.exvisit_path,
+    )
     token_total = bundle.token_estimate
     steps = 1  # one exvisit blast call yields the bundle
     notes = [f"blast_preset={bundle.preset}", f"blast_confidence={bundle.confidence}"]
@@ -777,7 +788,7 @@ def exvisit_strategy(
         execution = run_runner_command(
             runner_cmd,
             case,
-            case.exv_path,
+            case.exvisit_path,
             pricing=pricing,
             trajectory_template=trajectory_template,
             workspace_path=workspace_path,
@@ -812,11 +823,11 @@ def summarize_results(results: Sequence[CaseResult], input_cost_per_1m: Optional
         return sum(values) / max(1, len(values))
 
     control_tokens = [case.control.input_tokens for case in results]
-    exvisit_tokens = [case.exv.input_tokens for case in results]
+    exvisit_tokens = [case.exvisit.input_tokens for case in results]
     control_steps = [case.control.steps for case in results]
-    exvisit_steps = [case.exv.steps for case in results]
+    exvisit_steps = [case.exvisit.steps for case in results]
     control_rot = [case.control.context_rot_index for case in results]
-    exvisit_rot = [case.exv.context_rot_index for case in results]
+    exvisit_rot = [case.exvisit.context_rot_index for case in results]
 
     payload: Dict[str, object] = {
         "cases": len(results),
@@ -832,9 +843,9 @@ def summarize_results(results: Sequence[CaseResult], input_cost_per_1m: Optional
             "avg_tokens": avg(exvisit_tokens),
             "avg_steps": avg(exvisit_steps),
             "avg_context_rot": avg(exvisit_rot),
-            "oracle_hit_rate": avg([1.0 if case.exv.oracle_hit else 0.0 for case in results]),
-            "oracle_hit_at_1_rate": avg([1.0 if case.exv.oracle_hit_at_1 else 0.0 for case in results]),
-            "pass_at_1_rate": None if any(case.exv.pass_at_1 is None for case in results) else avg([1.0 if case.exv.pass_at_1 else 0.0 for case in results]),
+            "oracle_hit_rate": avg([1.0 if case.exvisit.oracle_hit else 0.0 for case in results]),
+            "oracle_hit_at_1_rate": avg([1.0 if case.exvisit.oracle_hit_at_1 else 0.0 for case in results]),
+            "pass_at_1_rate": None if any(case.exvisit.pass_at_1 is None for case in results) else avg([1.0 if case.exvisit.pass_at_1 else 0.0 for case in results]),
         },
     }
     control_avg = payload["control"]["avg_tokens"]  # type: ignore[index]
@@ -845,7 +856,7 @@ def summarize_results(results: Sequence[CaseResult], input_cost_per_1m: Optional
         "context_rot_reduction_pct": 100.0 * (1.0 - (payload["exvisit"]["avg_context_rot"] / max(1.0, payload["control"]["avg_context_rot"]))),  # type: ignore[index]
     }
     control_costs = [case.control.cost_to_resolve_usd for case in results if case.control.cost_to_resolve_usd is not None]
-    exvisit_costs = [case.exv.cost_to_resolve_usd for case in results if case.exv.cost_to_resolve_usd is not None]
+    exvisit_costs = [case.exvisit.cost_to_resolve_usd for case in results if case.exvisit.cost_to_resolve_usd is not None]
     if control_costs and exvisit_costs and len(control_costs) == len(results) and len(exvisit_costs) == len(results):
         control_cost_avg = avg(control_costs)
         exvisit_cost_avg = avg(exvisit_costs)
@@ -860,6 +871,8 @@ def summarize_results(results: Sequence[CaseResult], input_cost_per_1m: Optional
 
 
 def git(command: Sequence[str], cwd: Optional[Path] = None) -> None:
+    if cwd:
+        print(f"[git] cwd={cwd}")
     proc = subprocess.run(["git", *command], cwd=cwd, text=True, capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(command)} failed: {proc.stderr.strip() or proc.stdout.strip()}")
@@ -1007,6 +1020,7 @@ def precompute_cases(
             oracle_files = list(row.get("oracle_files") or [])
         root_name = camelize_repo(repo)
         exvisit_path = exvisit_dir / f"{case_id}.exv"
+        meta_out = sidecar_path(exvisit_path)
         exvisit_cache_key = (repo, base_commit_text)
         if exvisit_path.exists():
             exvisit_src = exvisit_path.read_text(encoding="utf-8")
@@ -1014,9 +1028,12 @@ def precompute_cases(
             exvisit_src = exvisit_text_cache[exvisit_cache_key]
             exvisit_path.write_text(exvisit_src, encoding="utf-8")
         else:
-            exvisit_src = scaffold_generate(str(repo_path), root_name=root_name, fast_imports=True)
+            exvisit_src = scaffold_generate(str(repo_path), root_name=root_name, fast_imports=True, meta_out=meta_out)
             exvisit_text_cache[exvisit_cache_key] = exvisit_src
             exvisit_path.write_text(exvisit_src, encoding="utf-8")
+        # Ensure meta file is generated for every case (even if .exv was cached)
+        if not meta_out.exists():
+            scaffold_generate(str(repo_path), root_name=root_name, fast_imports=True, meta_out=meta_out)
         manifest_cases.append({
             "case_id": case_id,
             "repo": repo,
@@ -1073,7 +1090,7 @@ def _results_payload(results: Sequence[CaseResult], input_cost_per_1m: Optional[
                 "base_commit": result.base_commit,
                 "oracle_files": result.oracle_files,
                 "control": asdict(result.control),
-                "exvisit": asdict(result.exv),
+                "exvisit": asdict(result.exvisit),
             }
             for result in results
         ],
@@ -1190,6 +1207,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--exvisit-traj-template", default=None, help="Optional path template for the exvisit trajectory JSON file")
     run.add_argument("--workspace-root", default=None, help="Optional root for per-strategy copy-on-start workspaces used by external runners")
     run.add_argument("--no-resume", action="store_true", help="Disable resume from an existing results file")
+    run.add_argument("--limit", type=int, default=None, help="Limit number of cases to run")
     return parser
 
 
@@ -1210,17 +1228,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if args.command == "run":
         cases = load_manifest(Path(args.manifest))
+        if args.limit:
+            cases = cases[:args.limit]
         out_path = Path(args.out)
         payload = run_benchmark(
             cases,
             control_runner_cmd=args.control_runner_cmd,
-            exvisit_runner_cmd=args.exv_runner_cmd,
+            exvisit_runner_cmd=args.exvisit_runner_cmd,
             input_cost_per_1m=args.input_cost_per_1m,
             output_path=out_path,
             resume=not args.no_resume,
             pricing=load_pricing_config(Path(args.pricing_file) if args.pricing_file else None),
             control_traj_template=args.control_traj_template,
-            exvisit_traj_template=args.exv_traj_template,
+            exvisit_traj_template=args.exvisit_traj_template,
             workspace_root=Path(args.workspace_root) if args.workspace_root else None,
         )
         _write_json(out_path, payload)

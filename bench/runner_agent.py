@@ -23,7 +23,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 
 _DEFAULT_MODEL = os.environ.get("exvisit_MODEL", "claude-sonnet-4-5")
-_DEFAULT_MAX_STEPS = int(os.environ.get("exvisit_MAX_STEPS", "20"))
+_DEFAULT_MAX_STEPS = int(os.environ.get("exvisit_MAX_STEPS", "5"))
 _DEFAULT_TRAJ_DIR = Path(os.environ.get("exvisit_TRAJ_DIR", "/tmp/exvisit-trajs"))
 _FILE_READ_LINE_LIMIT = 300
 
@@ -120,14 +120,19 @@ exvisit_TOOLS: List[Dict[str, Any]] = [
 
 
 def detect_provider(model: str) -> str:
-    if model.strip().lower().startswith("gemini"):
+    m = model.strip().lower()
+    if m.startswith("gemini"):
         return "gemini"
+    if m.startswith("google/") or m.startswith("openrouter/") or m.startswith("nvidia/") or "/" in m:
+        return "openrouter"
     return "anthropic"
 
 
 def get_api_key_for_provider(provider: str) -> str:
     if provider == "gemini":
         return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
+    if provider == "openrouter":
+        return os.environ.get("OPENROUTER_API_KEY", "")
     if provider == "anthropic":
         return os.environ.get("ANTHROPIC_API_KEY", "")
     return ""
@@ -330,17 +335,30 @@ def exec_run_tests(workspace: Path, test_path: str = "", timeout: int = 120) -> 
 
 def _system_prompt(exvisit_path: Path, workspace: Path, issue_text: str) -> str:
     return (
-        "You are a software engineer resolving a bug in a Python repository.\n\n"
+        "# SYSTEM DIRECTIVE: EXVISIT SPATIAL EXECUTION\n"
+        "You are an autonomous compiler daemon. You do not explain your thoughts. You output ONLY valid tool calls.\n\n"
+        "## OPERATIONAL STATES\n"
+        "You operate in exactly TWO states.\n"
+        "STATE 1: NAVIGATE.\n"
+        "STATE 2: EDIT.\n\n"
+        "## STATE 1: NAVIGATE\n"
+        "To find the bug, use the EXVISIT topology map.\n"
+        "Available Commands:\n"
+        "- `exvisit_blast` (Initial search, ALWAYS START WITH THIS)\n"
+        "- `exvisit_query` (Find what this node calls or depends on, target must be Fully Qualified Name)\n"
+        "- `read_file` (Inspect code to confirm)\n\n"
+        "## STATE 2: EDIT\n"
+        "Once you locate the precise node containing the fault, you MUST transition to EDIT state. You will execute an exact Abstract Syntax Tree (AST) surgical replacement.\n"
+        "Command Syntax:\n"
+        "`exvisit_edit(file=..., locator=\"Namespace.ClassName.method\", old=\"exact multi-line string to replace\", new=\"exact replacement string\")`\n\n"
+        "## RULES\n"
+        "1. DO NOT use grep, find, sed, or awk. They are uninstalled.\n"
+        "2. DO NOT output conversational text. Output ONLY the raw command.\n"
+        "3. If you receive an error, immediately adjust your query and retry.\n"
+        "4. After each successful exvisit_edit, call run_tests to verify.\n"
+        "5. Stop once run_tests returns exit_code 0.\n\n"
         f"WORKSPACE: {workspace}\n"
-        f"exvisit MAP: {exvisit_path}\n\n"
-        "STRICT NAVIGATION RULES:\n"
-        "1. Do not use grep, find, or rg.\n"
-        "2. Start every investigation with exvisit_blast.\n"
-        "3. Use exvisit_query to explore graph neighbors.\n"
-        "4. Use read_file to inspect specific source.\n"
-        "5. Use exvisit_edit for all code changes.\n"
-        "6. After each edit, call run_tests.\n"
-        "7. Stop once run_tests returns exit_code 0.\n\n"
+        f"EXVISIT MAP: {exvisit_path}\n\n"
         "ISSUE TO RESOLVE:\n"
         f"{issue_text}"
     )
@@ -424,6 +442,8 @@ def _run_anthropic_loop(
     pass_at_1 = False
     step = 0
 
+    visited_nodes: Set[str] = set()
+
     while step < max_steps:
         response = client.messages.create(
             model=model,
@@ -443,6 +463,10 @@ def _run_anthropic_loop(
         step += 1
 
         if response.stop_reason != "tool_use":
+            if step == max_steps and not pass_at_1:
+                messages.append({"role": "user", "content": "SYSTEM OVERRIDE: Maximum traversal steps reached. You MUST formulate an exvisit_edit command immediately using your best current hypothesis."})
+                turns.append(turn)
+                continue
             turns.append(turn)
             break
 
@@ -451,7 +475,22 @@ def _run_anthropic_loop(
             if not hasattr(block, "type") or block.type != "tool_use":
                 continue
             tool_input = block.input or {}
-            result_text, tests_passed = _execute_tool_call(block.name, tool_input, exvisit_path, workspace, repo_path)
+            
+            if block.name == "exvisit_query":
+                target_node = tool_input.get("target")
+                if target_node in visited_nodes:
+                    result_text = "SYSTEM WARNING: Node already explored. Pivot to a different branch."
+                    tests_passed = False
+                else:
+                    if target_node:
+                        visited_nodes.add(target_node)
+                    result_text, tests_passed = _execute_tool_call(block.name, tool_input, exvisit_path, workspace, repo_path)
+            else:
+                result_text, tests_passed = _execute_tool_call(block.name, tool_input, exvisit_path, workspace, repo_path)
+            
+            if block.name == "exvisit_edit" and "AMBIGUOUS MATCH" in result_text:
+                result_text += "\nSYSTEM OVERRIDE: Strategy switch required. You must expand your `old` string to include the surrounding 2-3 lines of code (including comments/whitespace) to ensure a mathematically unique match."
+
             safe_input = {k: v for k, v in tool_input.items() if k not in ("old", "new")}
             turn["tool_calls"].append({"tool": block.name, "input": safe_input, "result_preview": result_text[:400]})
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
@@ -462,8 +501,147 @@ def _run_anthropic_loop(
         if pass_at_1:
             break
 
+    if not pass_at_1 and step == max_steps and response.stop_reason == "tool_use":
+        # Force one last edit opportunity if we hit max steps and are still doing tools
+        pass
+
     return {
         "provider": "anthropic",
+        "case_id": case_id,
+        "model": model,
+        "steps": step,
+        "pass_at_1": pass_at_1,
+        "turns": turns,
+        "usage_metadata": usage_accum,
+    }
+
+
+def _run_openrouter_loop(
+    client: Any,
+    exvisit_path: Path,
+    workspace: Path,
+    repo_path: Path,
+    issue_text: str,
+    case_id: str,
+    model: str,
+    max_steps: int,
+) -> Dict[str, Any]:
+    system = _system_prompt(exvisit_path, workspace, issue_text)
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": (
+                f"Please resolve the issue for benchmark case `{case_id}`. "
+                "Begin with exvisit_blast using the full issue text."
+            ),
+        }
+    ]
+    usage_accum: Dict[str, int] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    turns: List[Dict[str, Any]] = []
+    pass_at_1 = False
+    step = 0
+    visited_nodes: Set[str] = set()
+
+    # Convert exvisit_TOOLS to OpenAI tool format
+    openai_tools = []
+    for tool in exvisit_TOOLS:
+        openai_tools.append({
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["input_schema"]
+            }
+        })
+
+    while step < max_steps:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=openai_tools,
+            tool_choice="auto",
+            max_tokens=4096,
+        )
+        
+        msg = response.choices[0].message
+        usage = response.usage
+        usage_accum["input_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+        usage_accum["output_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+
+        turn: Dict[str, Any] = {
+            "step": step,
+            "stop_reason": "tool_use" if msg.tool_calls else "stop",
+            "assistant_text": msg.content or "",
+            "tool_calls": []
+        }
+        
+        # OpenAI style message history
+        assistant_msg = {"role": "assistant", "content": msg.content}
+        if msg.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                } for tc in msg.tool_calls
+            ]
+        messages.append(assistant_msg)
+        step += 1
+
+        if not msg.tool_calls:
+            if step == max_steps and not pass_at_1:
+                messages.append({"role": "user", "content": "SYSTEM OVERRIDE: Maximum traversal steps reached. You MUST formulate an exvisit_edit command immediately using your best current hypothesis."})
+                turns.append(turn)
+                continue
+            turns.append(turn)
+            break
+
+        for tc in msg.tool_calls:
+            tool_name = tc.function.name
+            try:
+                tool_input = json.loads(tc.function.arguments)
+            except Exception:
+                tool_input = {}
+            
+            if tool_name == "exvisit_query":
+                target_node = tool_input.get("target")
+                if target_node in visited_nodes:
+                    result_text = "SYSTEM WARNING: Node already explored. Pivot to a different branch."
+                    tests_passed = False
+                else:
+                    if target_node:
+                        visited_nodes.add(target_node)
+                    result_text, tests_passed = _execute_tool_call(tool_name, tool_input, exvisit_path, workspace, repo_path)
+            else:
+                result_text, tests_passed = _execute_tool_call(tool_name, tool_input, exvisit_path, workspace, repo_path)
+            
+            if tool_name == "exvisit_edit" and "AMBIGUOUS MATCH" in result_text:
+                result_text += "\nSYSTEM OVERRIDE: Strategy switch required. You must expand your `old` string to include the surrounding 2-3 lines of code (including comments/whitespace) to ensure a mathematically unique match."
+
+            safe_input = {k: v for k, v in tool_input.items() if k not in ("old", "new")}
+            turn["tool_calls"].append({"tool": tool_name, "input": safe_input, "result_preview": result_text[:400]})
+            
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": tool_name,
+                "content": result_text
+            })
+            pass_at_1 = pass_at_1 or tests_passed
+
+        turns.append(turn)
+        if pass_at_1:
+            break
+
+    return {
+        "provider": "openrouter",
         "case_id": case_id,
         "model": model,
         "steps": step,
@@ -523,6 +701,8 @@ def _run_gemini_loop(
     pass_at_1 = False
     step = 0
 
+    visited_nodes: Set[str] = set()
+
     while step < max_steps:
         response = client.models.generate_content(model=model, contents=contents, config=config)
         response_usage = _gemini_usage_from_response(response)
@@ -549,6 +729,10 @@ def _run_gemini_loop(
         step += 1
 
         if not function_calls:
+            if step == max_steps and not pass_at_1:
+                contents.append(types.Content(role="user", parts=[types.Part.from_text(text="SYSTEM OVERRIDE: Maximum traversal steps reached. You MUST formulate an exvisit_edit command immediately using your best current hypothesis.")]))
+                turns.append(turn)
+                continue
             turns.append(turn)
             break
 
@@ -557,7 +741,22 @@ def _run_gemini_loop(
         for function_call in function_calls:
             tool_name = getattr(function_call, "name", "")
             tool_input = _as_plain_dict(getattr(function_call, "args", {}))
-            result_text, tests_passed = _execute_tool_call(tool_name, tool_input, exvisit_path, workspace, repo_path)
+            
+            if tool_name == "exvisit_query":
+                target_node = tool_input.get("target")
+                if target_node in visited_nodes:
+                    result_text = "SYSTEM WARNING: Node already explored. Pivot to a different branch."
+                    tests_passed = False
+                else:
+                    if target_node:
+                        visited_nodes.add(target_node)
+                    result_text, tests_passed = _execute_tool_call(tool_name, tool_input, exvisit_path, workspace, repo_path)
+            else:
+                result_text, tests_passed = _execute_tool_call(tool_name, tool_input, exvisit_path, workspace, repo_path)
+            
+            if tool_name == "exvisit_edit" and "AMBIGUOUS MATCH" in result_text:
+                result_text += "\nSYSTEM OVERRIDE: Strategy switch required. You must expand your `old` string to include the surrounding 2-3 lines of code (including comments/whitespace) to ensure a mathematically unique match."
+
             safe_input = {k: v for k, v in tool_input.items() if k not in ("old", "new")}
             turn["tool_calls"].append({"tool": tool_name, "input": safe_input, "result_preview": result_text[:400]})
             function_responses.append(types.Part.from_function_response(name=tool_name, response={"result": result_text}))
@@ -567,6 +766,9 @@ def _run_gemini_loop(
         turns.append(turn)
         if pass_at_1:
             break
+
+    if not pass_at_1 and step == max_steps and function_calls:
+        pass
 
     return {
         "provider": "gemini",
@@ -592,6 +794,8 @@ def run_agent_loop(
 ) -> Dict[str, Any]:
     if provider == "gemini":
         return _run_gemini_loop(client, exvisit_path, workspace, repo_path, issue_text, case_id, model, max_steps)
+    if provider == "openrouter":
+        return _run_openrouter_loop(client, exvisit_path, workspace, repo_path, issue_text, case_id, model, max_steps)
     return _run_anthropic_loop(client, exvisit_path, workspace, repo_path, issue_text, case_id, model, max_steps)
 
 
@@ -639,7 +843,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     repo_path = Path(args.repo_path).resolve()
-    exvisit_path = Path(args.exv_path).resolve()
+    exvisit_path = Path(args.exvisit_path).resolve()
     workspace = Path(args.workspace).resolve() if args.workspace else repo_path
     traj_dir = Path(args.traj_dir)
     pricing_file = Path(args.pricing_file) if args.pricing_file else None
@@ -656,6 +860,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _fatal(f"workspace does not exist: {workspace}")
 
     issue_text: Optional[str] = args.issue_text
+    print(f"[debug] manifest_path='{args.manifest}' exists={os.path.exists(args.manifest) if args.manifest else False}")
     if not issue_text and args.manifest:
         issue_text = load_issue_from_manifest(Path(args.manifest), args.case_id)
     if not issue_text:
@@ -674,6 +879,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             from google import genai
 
             client = genai.Client(api_key=api_key)
+        elif provider == "openrouter":
+            from openai import OpenAI
+
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=api_key,
+            )
         else:
             import anthropic  # type: ignore
 

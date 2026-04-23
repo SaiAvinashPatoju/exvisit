@@ -9,6 +9,8 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from exvisit.scaffold import generate as scaffold_generate
+import bench.swebench_lite_harness as harness
+
 from bench.swebench_lite_harness import (
     BenchmarkCase,
     PricingConfig,
@@ -125,6 +127,45 @@ def test_extract_usage_summary_computes_cost_without_reasoning_double_count():
     assert usage.reasoning_tokens == 80
     expected = ((500 * 10.0) + (200 * 5.0) + (300 * 1.0) + (150 * 20.0)) / 1_000_000.0
     assert usage.cost_to_resolve_usd == expected
+
+
+def test_exvisit_strategy_passes_exvisit_path_to_bundle():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pkg = root / "sample"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "sessions.py").write_text(
+            "class Session:\n    def resolve_redirects(self):\n        return 'redirect'\n",
+            encoding="utf-8",
+        )
+        exvisit_path = root / "sample.exv"
+        exvisit_path.write_text(scaffold_generate(str(root), root_name="SampleApp"), encoding="utf-8")
+
+        case = BenchmarkCase(
+            case_id="sample-1",
+            repo="sample/repo",
+            repo_path=str(root),
+            base_commit=None,
+            issue_text="Fix `Session.resolve_redirects` behavior in sessions.py when redirects are followed",
+            oracle_files=["sample/sessions.py"],
+            exvisit_path=str(exvisit_path),
+        )
+
+        seen: dict = {}
+        original = harness.build_blast_bundle
+
+        def spy_build_blast_bundle(*args, **kwargs):
+            seen["exvisit_path"] = kwargs.get("exvisit_path")
+            return original(*args, **kwargs)
+
+        harness.build_blast_bundle = spy_build_blast_bundle
+        try:
+            exvisit_strategy(case)
+        finally:
+            harness.build_blast_bundle = original
+
+        assert seen["exvisit_path"] == str(exvisit_path)
 
 
 def test_run_benchmark_resumes_existing_output():
