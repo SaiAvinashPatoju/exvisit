@@ -22,7 +22,7 @@ const { URL } = require('url');
 
 const PKG     = require('./package.json');
 const VERSION = PKG.version;
-const REPO    = 'exvisit-pro/exvisit';
+const REPO    = 'SaiAvinashPatoju/exvisit';
 
 // Mapping from Node.js (platform, arch) to the asset names published by
 // .github/workflows/rust-release.yml.
@@ -40,7 +40,7 @@ if (!assetName) {
   console.error(
     `[exvisit-mcp] Unsupported platform: ${platformKey}\n` +
     `Supported: ${Object.keys(BINARY_MAP).join(', ')}\n` +
-    'You can build from source: https://github.com/exvisit-pro/exvisit/tree/main/rust'
+    'You can build from source: https://github.com/SaiAvinashPatoju/exvisit/tree/main/rust'
   );
   process.exit(1);
 }
