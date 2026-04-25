@@ -142,7 +142,7 @@ def cmd_blast(args):
         _write_output(args.out, output)
         print(f"wrote {args.out}")
         return
-    sys.stdout.write(output)
+    sys.stdout.buffer.write(output.encode("utf-8"))
 
 
 def cmd_anchor(args):

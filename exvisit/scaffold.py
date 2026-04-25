@@ -244,9 +244,10 @@ def _extract_typed_edges(py: Path) -> Dict[str, Set[str]]:
     Edge types:
       * 'import'     — from X import Y / import X
       * 'inherit'    — class Foo(Bar): -> Bar
+      * 'call'       — function/method calls to imported names
       * 'config-ref' — string literals matching dotted package paths
     """
-    out: Dict[str, Set[str]] = {"import": set(), "inherit": set(), "config-ref": set()}
+    out: Dict[str, Set[str]] = {"import": set(), "inherit": set(), "call": set(), "config-ref": set()}
     try:
         source = py.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
@@ -260,14 +261,19 @@ def _extract_typed_edges(py: Path) -> Dict[str, Set[str]]:
         out["import"] = _imports_fast(py)
         return out
 
+    # Collect imported names for call-edge detection
+    imported_names: Set[str] = set()
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             out["import"].add(node.module)
             for a in node.names:
                 out["import"].add(f"{node.module}.{a.name}")
+                imported_names.add(a.name)
         elif isinstance(node, ast.Import):
             for a in node.names:
                 out["import"].add(a.name)
+                imported_names.add(a.name.split(".")[-1])
         elif isinstance(node, ast.ClassDef):
             for base in node.bases:
                 # capture 'Foo' or 'pkg.Foo'
@@ -283,6 +289,23 @@ def _extract_typed_edges(py: Path) -> Dict[str, Set[str]]:
                         parts.append(cur.id)
                         out["inherit"].add(".".join(reversed(parts)))
 
+    # Extract call edges: function/method calls to imported names
+    # This distinguishes "uses" from "merely imports" within a namespace
+    call_count = 0
+    for node in ast.walk(tree):
+        if call_count >= 128:
+            break
+        if isinstance(node, ast.Call):
+            callee = node.func
+            if isinstance(callee, ast.Name) and callee.id in imported_names:
+                out["call"].add(callee.id)
+                call_count += 1
+            elif isinstance(callee, ast.Attribute):
+                # obj.method() — if obj is an imported name
+                if isinstance(callee.value, ast.Name) and callee.value.id in imported_names:
+                    out["call"].add(callee.value.id)
+                    call_count += 1
+
     # config-ref string literals — capped to avoid noise
     refs = 0
     for match in CONFIG_REF_RE.finditer(source):
@@ -291,6 +314,63 @@ def _extract_typed_edges(py: Path) -> Dict[str, Set[str]]:
         if refs >= 64:
             break
     return out
+
+
+def _extract_migration_edges(py: Path) -> Set[str]:
+    """Parse a Django migration file to extract model references.
+
+    Returns a set of model/module references the migration modifies
+    (from CreateModel, AlterField, AddField, etc. operations).
+    """
+    try:
+        source = py.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception:
+        return set()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source)
+    except Exception:
+        return set()
+
+    refs: Set[str] = set()
+    # Walk for migrations.CreateModel, migrations.AlterField, etc.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # Match migrations.X() or operations like CreateModel, AddField
+        func_name = ""
+        if isinstance(func, ast.Attribute):
+            func_name = func.attr
+        elif isinstance(func, ast.Name):
+            func_name = func.id
+        if func_name not in (
+            "CreateModel", "AlterField", "AddField", "RemoveField",
+            "RenameField", "AlterModelOptions", "AlterModelManagers",
+            "AlterModelTable", "DeleteModel", "RenameModel",
+            "AddIndex", "RemoveIndex", "AddConstraint", "RemoveConstraint",
+            "AlterUniqueTogether", "AlterIndexTogether", "AlterOrderWithRespectTo",
+            "RunPython", "RunSQL", "SeparateDatabaseAndState",
+        ):
+            continue
+        # Extract model_name from keyword args or first positional
+        for kw in node.keywords:
+            if kw.arg in ("model_name", "name") and isinstance(kw.value, ast.Constant):
+                refs.add(str(kw.value.value).lower())
+        if node.args and isinstance(node.args[0], ast.Constant):
+            refs.add(str(node.args[0].value).lower())
+    # Also capture dependencies = [(app_label, migration_name), ...]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "dependencies":
+                    if isinstance(node.value, ast.List):
+                        for elt in node.value.elts:
+                            if isinstance(elt, ast.Tuple) and len(elt.elts) >= 1:
+                                if isinstance(elt.elts[0], ast.Constant):
+                                    refs.add(str(elt.elts[0].value).lower())
+    return refs
 
 
 def _line_range(py: Path) -> Tuple[int, int]:
@@ -403,15 +483,15 @@ def generate(repo: str, root_name: str = "App", fast_imports: bool = False,
             sym_to_file.setdefault(sym, f)
 
     typed_edges: Dict[str, Set[Tuple[str, str]]] = {
-        "import": set(), "inherit": set(), "config-ref": set(), "test-of": set(),
+        "import": set(), "inherit": set(), "call": set(), "config-ref": set(), "test-of": set(),
     }
     flat_edge_set: Set[Tuple[str, str]] = set()
     for f, (ns, node) in file_to_node.items():
-        edges = _extract_typed_edges(f) if not fast_imports else {"import": _imports_fast(f), "inherit": set(), "config-ref": set()}
+        edges = _extract_typed_edges(f) if not fast_imports else {"import": _imports_fast(f), "inherit": set(), "call": set(), "config-ref": set()}
         for etype, targets in edges.items():
             for tgt in targets:
                 cand: Optional[Path] = mod_to_file.get(tgt)
-                if cand is None and etype == "inherit":
+                if cand is None and etype in ("inherit", "call"):
                     cand = sym_to_file.get(tgt.split(".")[-1])
                 if cand is None:
                     parts = tgt.split(".")
@@ -423,6 +503,21 @@ def generate(repo: str, root_name: str = "App", fast_imports: bool = False,
                     _, tgt_node = file_to_node[cand]
                     if tgt_node != node:
                         typed_edges[etype].add((node, tgt_node))
+                        flat_edge_set.add((node, tgt_node))
+        # Migration edges: link migration files to the models they modify
+        rel_posix = f.relative_to(r).as_posix()
+        kind = _classify_kind(rel_posix, f.name, file_loc.get(f, 0))
+        if kind == "migration":
+            migration_refs = _extract_migration_edges(f)
+            for ref in migration_refs:
+                # Try to find the model/module file this migration references
+                cand = mod_to_file.get(ref)
+                if cand is None:
+                    cand = sym_to_file.get(ref)
+                if cand and cand != f and cand in file_to_node:
+                    _, tgt_node = file_to_node[cand]
+                    if tgt_node != node:
+                        typed_edges.setdefault("migration-of", set()).add((node, tgt_node))
                         flat_edge_set.add((node, tgt_node))
         # test-of: heuristic mapping tests/test_X.py → src/X.py
         if f.name.startswith("test_") or "/tests/" in f.as_posix():

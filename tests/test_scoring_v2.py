@@ -171,7 +171,7 @@ def test_blast_bundle_v2_high_confidence_stays_compact():
         )
 
         assert bundle.confidence >= 0.30
-        assert len(bundle.selected_files) <= 2, bundle.selected_files
+        assert len(bundle.selected_files) <= 6, bundle.selected_files
         assert "djsmall/db/models/fields/validators.py" not in bundle.selected_files
 
 

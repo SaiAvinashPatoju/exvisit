@@ -1,14 +1,14 @@
 {
   "name": "exvisit-mcp",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "MCP server for Exvisit — structural context compiler for AI coding agents. Connects Claude Desktop and Cursor to your .exv repository map with zero Rust required.",
   "keywords": ["mcp", "exvisit", "ai", "llm", "claude", "cursor", "code-navigation"],
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/exvisit-pro/exvisit"
+    "url": "https://github.com/SaiAvinashPatoju/exvisit"
   },
-  "homepage": "https://github.com/exvisit-pro/exvisit#readme",
+  "homepage": "https://github.com/SaiAvinashPatoju/exvisit#readme",
   "engines": {
     "node": ">=18"
   },

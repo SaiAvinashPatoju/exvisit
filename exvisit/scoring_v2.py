@@ -692,6 +692,33 @@ def score_nodes_v2(
         for c in node_cluster.values():
             cluster_size[c] = cluster_size.get(c, 0) + 1
 
+    # ---- FIX 1: Build typed-edge adjacency for namespace adjacency --------
+    # Nodes connected by call/inherit edges should rank higher than
+    # nodes connected only by import edges within the same namespace.
+    incoming_call_count: Dict[str, int] = {}
+    incoming_inherit_count: Dict[str, int] = {}
+    if meta is not None:
+        for etype, pairs in meta.edges_by_type.items():
+            for pair in pairs:
+                if len(pair) >= 2:
+                    dst = pair[1] if isinstance(pair, (list, tuple)) else pair
+                    if etype == "call":
+                        incoming_call_count[dst] = incoming_call_count.get(dst, 0) + 1
+                    elif etype == "inherit":
+                        incoming_inherit_count[dst] = incoming_inherit_count.get(dst, 0) + 1
+
+    # ---- FIX 2: Compute PageRank cap ------------------------------------
+    # Prevent high-PR hub nodes from dominating. Cap at the 90th percentile
+    # so hub nodes don't get unbounded advantage.
+    all_pr = sorted(node_pr.values(), reverse=True)
+    if all_pr:
+        p90_idx = max(0, int(len(all_pr) * 0.10))
+        pr_cap = all_pr[min(p90_idx, len(all_pr) - 1)]
+        if pr_cap <= 0:
+            pr_cap = all_pr[0] * 0.5 if all_pr[0] > 0 else 1.0
+    else:
+        pr_cap = 1.0
+
     # Tokenize text once
     q_lower = text.lower()
     q_tokens = _tokenize_text(text)
@@ -701,6 +728,23 @@ def score_nodes_v2(
     error_codes = _extract_error_codes(text)
     upper_consts = _extract_upper_constants(text)
     mgmt_verbs = _extract_mgmt_commands(text)
+
+    # ---- FIX 4: Build per-term IDF for term specificity ------------------
+    # Rare terms in the issue that match fewer node symbol bags should
+    # contribute more signal than common terms.
+    code_term_lowers = [t.lower() for t in code_terms]
+    term_doc_freq: Counter = Counter()
+    for n in nodes:
+        syms = node_symbols.get(n.fqn, [])
+        sym_set = {s.lower() for s in syms}
+        sp = (n.src_path or "").replace("\\", "/").lower()
+        stem = Path(sp).stem.lower() if sp else ""
+        combined = sym_set | {stem}
+        for tl in set(code_term_lowers):
+            tail = tl.split(".")[-1]
+            if tl in combined or tail in combined:
+                term_doc_freq[tl] += 1
+    N_nodes = len(nodes)
 
     # Build BM25 corpus
     corpus_bags: List[List[str]] = []
@@ -733,7 +777,9 @@ def score_nodes_v2(
         s_lex = _bm25_score(q_tokens, bag, idf, avg_dl)
         s_trace = _trace_overlap(n, frames)
         s_sym = _max_symbol_overlap(code_terms, node_symbols.get(n.fqn, []))
-        s_cent = math.log1p(node_pr.get(n.fqn, 0.0) * 1000.0)  # rescale for dynamic range
+        # FIX 2: PageRank capping — clamp raw PR to pr_cap before log scaling
+        raw_pr = min(node_pr.get(n.fqn, 0.0), pr_cap)
+        s_cent = math.log1p(raw_pr * 1000.0)
         cs = max(1, cluster_size.get(node_cluster.get(n.fqn, ""), 1))
         s_idf = math.log(1.0 + 1.0 / cs)
         s_reg = 1.0 if kind == "registry" else 0.0
@@ -746,6 +792,28 @@ def score_nodes_v2(
         s_error_code = _error_code_match(n, error_codes)
         s_upper_const = _upper_const_match(n, upper_consts)
         s_mgmt = _mgmt_command_match(n, mgmt_verbs)
+
+        # FIX 1: Namespace adjacency — boost nodes with incoming call/inherit edges
+        n_calls = incoming_call_count.get(n.fqn, 0)
+        n_inherits = incoming_inherit_count.get(n.fqn, 0)
+        s_call_target = min(1.0, n_calls * 0.2) if n_calls > 0 else 0.0
+        s_inherit_target = min(1.0, n_inherits * 0.25) if n_inherits > 0 else 0.0
+
+        # FIX 4: Term-specificity IDF boost — rare issue terms matching this
+        # node's symbols get a multiplicative boost
+        s_term_idf = 0.0
+        node_syms_low = {s.lower() for s in node_symbols.get(n.fqn, [])}
+        sp_for_idf = (n.src_path or "").replace("\\", "/").lower()
+        stem_for_idf = Path(sp_for_idf).stem.lower() if sp_for_idf else ""
+        combined_for_idf = node_syms_low | ({stem_for_idf} if stem_for_idf else set())
+        for tl in set(code_term_lowers):
+            tail = tl.split(".")[-1]
+            if tl in combined_for_idf or tail in combined_for_idf:
+                df = term_doc_freq.get(tl, N_nodes)
+                # Rare terms (appearing in few nodes) get higher IDF weight
+                term_idf_val = math.log(1.0 + N_nodes / max(df, 1))
+                s_term_idf += term_idf_val
+
         s_test_pen = _test_gate(
             n, kind, q_lower, config.test_admit_terms,
             trace_into_node=frames_by_node.get(n.fqn, False),
@@ -771,6 +839,9 @@ def score_nodes_v2(
             + B.get("error_code", 0.0) * s_error_code
             + B.get("upper_const", 0.0) * s_upper_const
             + B.get("mgmt_command", 0.0) * s_mgmt
+            + B.get("call_target", 3.0) * s_call_target
+            + B.get("inherit_target", 4.0) * s_inherit_target
+            + B.get("term_idf", 2.5) * s_term_idf
         )
         if s_test_pen > 0:
             # Multiplicative gate: when a node is a test file *and* the issue
@@ -782,6 +853,13 @@ def score_nodes_v2(
             # flooded top-K with migrations that are almost never the oracle.
             score = score * 0.15 - B.get("migration", 3.0)
 
+        # FIX 2 continued: High-PR diversity penalty — if node is a top-5
+        # PageRank hub AND has no direct issue-term match, demote it slightly
+        # to give room for more specific files.
+        if node_pr.get(n.fqn, 0.0) > pr_cap * 0.8:
+            if s_sym_exact == 0 and s_explicit == 0 and s_trace == 0 and s_error_code == 0:
+                score *= 0.85  # mild penalty for generic high-PR nodes
+
         components = {
             "lex": s_lex, "trace": s_trace, "sym": s_sym, "cent": s_cent,
             "idf": s_idf, "reg": s_reg, "stem": s_stem, "path": s_path,
@@ -789,6 +867,8 @@ def score_nodes_v2(
             "dunder": s_dunder, "domain": s_domain, "error_code": s_error_code,
             "upper_const": s_upper_const, "mgmt_command": s_mgmt,
             "test_pen": s_test_pen, "migration_pen": s_migration_pen,
+            "call_target": s_call_target, "inherit_target": s_inherit_target,
+            "term_idf": s_term_idf,
         }
         reasons: List[str] = []
         if s_explicit > 0:
@@ -814,9 +894,15 @@ def score_nodes_v2(
         if s_reg > 0:
             reasons.append("registry-prior")
         if s_cent > 0:
-            reasons.append(f"pagerank={node_pr.get(n.fqn,0):.4f}")
+            reasons.append(f"pagerank={raw_pr:.4f}")
         if s_idf > 0:
             reasons.append(f"cluster-idf(size={cs})")
+        if s_call_target > 0:
+            reasons.append(f"call-target({n_calls})")
+        if s_inherit_target > 0:
+            reasons.append(f"inherit-target({n_inherits})")
+        if s_term_idf > 0:
+            reasons.append(f"term-idf={s_term_idf:.2f}")
         if s_test_pen > 0:
             reasons.append("test-penalty")
         if s_migration_pen > 0:

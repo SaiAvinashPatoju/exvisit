@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exvisit"
-version = "0.4.1"
+version = "0.5.0"
 description = "Structural context compiler for AI coding agents — 73× token reduction via spatial .exv maps"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
@@ -61,10 +61,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/exvisit/exvisit"
-Repository = "https://github.com/exvisit/exvisit"
-Issues = "https://github.com/exvisit/exvisit/issues"
-Changelog = "https://github.com/exvisit/exvisit/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/SaiAvinashPatoju/exvisit"
+Repository = "https://github.com/SaiAvinashPatoju/exvisit"
+Issues = "https://github.com/SaiAvinashPatoju/exvisit/issues"
+Changelog = "https://github.com/SaiAvinashPatoju/exvisit/blob/main/CHANGELOG.md"
 
 # ── Entry points ──────────────────────────────────────────────────────────────
 # Both `exvisit` and the short alias `exv` map to the same CLI dispatcher.

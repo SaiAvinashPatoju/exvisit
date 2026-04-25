@@ -30,10 +30,11 @@ META_VERSION = 1
 
 DEFAULT_EDGE_PRIORS = {
     "import": 0.12,
-    "call": 0.21,
-    "inherit": 0.28,
+    "call": 0.28,
+    "inherit": 0.32,
     "descriptor": 0.34,
     "config-ref": 0.41,
+    "migration-of": 0.18,
     "test-of": 0.05,
 }
 

@@ -1,7 +1,0 @@
-{
-  "_comment": "Claude Sonnet 4.6 pricing (USD per million tokens). Loaded by bench/runner_agent.py and bench/swebench_lite_harness.py via --pricing-file.",
-  "input_base_per_1m": 3.00,
-  "cache_write_per_1m": 3.75,
-  "cache_read_per_1m": 0.30,
-  "output_per_1m": 15.00
-}

@@ -447,10 +447,10 @@ def _neighbor_budget(max_files: int, anchor_count: int, confidence: float, low_m
     if low_margin or anchor_count > 1:
         return remaining
     if confidence >= 0.55:
-        return min(1, remaining)
-    if confidence >= 0.40:
         return min(2, remaining)
-    return min(3, remaining)
+    if confidence >= 0.40:
+        return min(3, remaining)
+    return min(remaining, 4)
 
 
 def _sibling_budget(max_files: int, selected_count: int, confidence: float, low_margin: bool) -> int:
@@ -458,10 +458,10 @@ def _sibling_budget(max_files: int, selected_count: int, confidence: float, low_
     if remaining == 0:
         return 0
     if low_margin:
-        return min(1, remaining)
+        return min(3, remaining)
     if confidence < 0.30:
-        return min(1, remaining)
-    return 0
+        return min(3, remaining)
+    return min(2, remaining)
 
 
 def _cluster_key(node: Node, meta: Optional[GraphMeta]) -> str:
@@ -564,11 +564,13 @@ def _weak_neighbor_penalty(
         or scored_node.components.get("mgmt_command", 0.0) > 0.0
         or scored_node.components.get("upper_const", 0.0) > 0.0
         or abs(scored_node.components.get("domain", 0.0)) >= 0.4
+        or scored_node.components.get("lex", 0.0) > 1.5
+        or scored_node.components.get("term_idf", 0.0) > 1.0
     )
     if strong_signal:
         return 1.0
     if node_meta.kind == "registry":
-        return 0.18
+        return 0.65
     if node_meta.kind == "test":
         return 0.25
     if node_meta.kind == "migration":
@@ -677,15 +679,14 @@ def _select_v2_nodes(
             for node in selected_nodes
             if _cluster_key(node, meta)
         }
-        ratio_floor = 0.60 if low_margin else 0.80
+        ratio_floor = 0.25 if low_margin else 0.35
         score_floor = primary_score * ratio_floor if primary_score > 0 else 0.0
+        rank_cap_sib = max(16, preset.max_files * 5)
         for scored_node in scored:
             if sibling_budget <= 0:
                 break
             node = scored_node.node
             if node.fqn in selected_fqns or not node.src_path:
-                continue
-            if Path(node.src_path).name == "__init__.py":
                 continue
             cluster = _cluster_key(node, meta)
             if cluster not in selected_clusters:
@@ -693,12 +694,113 @@ def _select_v2_nodes(
             if scored_node.score < score_floor:
                 continue
             idx = rank_index.get(node.fqn, 10**9)
-            if idx > max(8, preset.max_files * 3):
+            if idx > rank_cap_sib:
                 continue
             selected_nodes.append(node)
             selected_fqns.add(node.fqn)
             neighbor_reasons[node.fqn] = "same-cluster fallback near anchor score"
             sibling_budget -= 1
+
+    # ---- Package __init__.py injection ------------------------------------
+    # If we selected any file from a Python package, always consider that
+    # package's __init__.py — it defines the public API and is often the
+    # oracle file for namespace-adjacent issues.
+    init_budget = max(0, preset.max_files - len(selected_nodes))
+    if init_budget > 0:
+        selected_dirs: Set[str] = set()
+        for node in selected_nodes:
+            if node.src_path:
+                d = str(Path(node.src_path).parent).replace("\\", "/")
+                if d:
+                    selected_dirs.add(d)
+        for scored_node in scored:
+            if init_budget <= 0:
+                break
+            node = scored_node.node
+            if node.fqn in selected_fqns or not node.src_path:
+                continue
+            if Path(node.src_path).name != "__init__.py":
+                continue
+            d = str(Path(node.src_path).parent).replace("\\", "/")
+            if d not in selected_dirs:
+                continue
+            # Only require positive score (very permissive for __init__.py)
+            if scored_node.score <= 0:
+                continue
+            selected_nodes.append(node)
+            selected_fqns.add(node.fqn)
+            neighbor_reasons[node.fqn] = "package __init__.py for selected directory"
+            init_budget -= 1
+
+    # ---- Parent-package sibling expansion ---------------------------------
+    # If we selected e.g. migrations/operations/fields.py, also consider
+    # files in the parent directory (migrations/*.py) as candidates.
+    parent_budget = max(0, preset.max_files - len(selected_nodes))
+    if parent_budget > 0:
+        parent_dirs: Set[str] = set()
+        for node in selected_nodes:
+            if node.src_path:
+                d = str(Path(node.src_path).parent).replace("\\", "/")
+                parent = str(Path(d).parent).replace("\\", "/")
+                if parent and parent != ".":
+                    parent_dirs.add(parent)
+        parent_ratio_floor = 0.20 if low_margin else 0.30
+        parent_score_floor = primary_score * parent_ratio_floor if primary_score > 0 else 0.0
+        parent_rank_cap = max(20, preset.max_files * 6)
+        for scored_node in scored:
+            if parent_budget <= 0:
+                break
+            node = scored_node.node
+            if node.fqn in selected_fqns or not node.src_path:
+                continue
+            d = str(Path(node.src_path).parent).replace("\\", "/")
+            if d not in parent_dirs:
+                continue
+            if scored_node.score < parent_score_floor:
+                continue
+            idx = rank_index.get(node.fqn, 10**9)
+            if idx > parent_rank_cap:
+                continue
+            selected_nodes.append(node)
+            selected_fqns.add(node.fqn)
+            neighbor_reasons[node.fqn] = "parent-package sibling of selected file"
+            parent_budget -= 1
+
+    # ---- Graph-neighbor fill phase ----------------------------------------
+    # If budget remains, scan import/call neighbors of ALL selected files.
+    # This catches cross-subsystem oracle files (e.g. migrations/serializer.py
+    # when the anchor is in models/fields/__init__.py).
+    graph_fill_budget = max(0, preset.max_files - len(selected_nodes))
+    if graph_fill_budget > 0 and meta is not None:
+        all_selected_fqns = list(selected_fqns)
+        fill_neighbors = _meta_weighted_neighbors(
+            doc, meta, all_selected_fqns, hops=2, direction="both",
+        )
+        if fill_neighbors:
+            fill_candidates = []
+            for candidate in fill_neighbors.values():
+                scored_node = rank_map.get(candidate.fqn)
+                if scored_node is None or candidate.fqn in selected_fqns:
+                    continue
+                idx = rank_index.get(candidate.fqn, 10**9)
+                # Only include if it has reasonable scoring rank
+                if idx > max(15, preset.max_files * 5):
+                    continue
+                fill_candidates.append((candidate, scored_node, idx))
+            fill_candidates.sort(
+                key=lambda item: (-item[1].score, item[2], item[1].node.fqn)
+            )
+            for candidate, scored_node, _idx in fill_candidates:
+                if graph_fill_budget <= 0:
+                    break
+                if candidate.fqn in selected_fqns:
+                    continue
+                selected_nodes.append(scored_node.node)
+                selected_fqns.add(candidate.fqn)
+                neighbor_reasons[candidate.fqn] = (
+                    f"graph-fill: {candidate.via} edge {candidate.hop}-hop from selected"
+                )
+                graph_fill_budget -= 1
 
     return selected_nodes[: preset.max_files], neighbor_reasons
 
