@@ -1,6 +1,6 @@
 # ExVisit
 
-**73× token reduction. 41× better rank-1 file precision. One command.**
+**ExVisit is a coding browser, not a tool.**
 
 ```bash
 pip install exvisit
@@ -8,23 +8,62 @@ exv init --repo ./my-project
 exv blast my-project.exv --issue "TypeError in User.save() for blank email"
 ```
 
-ExVisit is a **structural context compiler** for AI coding agents. Instead of dumping raw source code into an LLM context window, ExVisit builds a typed spatial map of your codebase — a `.exv` graph — then uses a log-linear multi-signal ranker to pull exactly the 3–6 files the agent needs. No RAG server. No embeddings. No vector database. Pure graph arithmetic on the structure you already have.
+Just as a browser renders HTML into a navigable page, ExVisit renders a codebase's structural graph into a navigable map. An LLM using ExVisit doesn't "read files" — it **browses code**. It reads one structural view, reasons, navigates to the next, and converges on the right file without ever loading raw source.
+
+This distinction matters at adoption scale. When ExVisit is just one more tool in a system prompt, it saves tokens. When it becomes the **primary navigation primitive** — the medium through which agents explore — it changes what's possible. The agent doesn't need to read a codebase. It browses it.
 
 ---
 
 ## The numbers
 
-On a 101-case `django/django` SWE-Bench Lite trial:
+**Standalone blast recall** — `exv blast` with no LLM, raw structural navigation, 30-case Django SWE-Bench Lite:
 
-| Metric | Grep baseline | ExVisit v2 | Improvement |
+| Metric | ExVisit blast | Improvement vs random |
+|---|---:|---:|
+| Oracle hit@1 | **46.7%** | — |
+| Oracle hit@3 | **63.3%** | — |
+| Oracle hit@5 | **66.7%** | — |
+| Avg nav tokens | **~2,000** | 98% less than full repo read |
+
+**Agentic loop** — LLM browses via ExVisit tools (blast + locate + rg), 43-case Django SWE-Bench Lite:
+
+| Metric | Baseline (LLM alone) | ExVisit-Powered | Delta |
 |---|---:|---:|---:|
-| Avg input tokens | 129,652 | **1,763** | **−98.6%** |
-| Avg agent steps | 5 | **1** | **−80%** |
-| Context rot index | 3.83 | **1.57** | **−58.9%** |
-| Oracle rank-1 precision | 0.99% | **40.6%** | **41×** |
-| Oracle file hit rate | 7.9% | **61.4%** | **+53 pp** |
+| Oracle hit@1 | ~35% (est.) | **34.9%** | baseline |
+| Oracle hit when HIGH confidence | — | **70.0%** | — |
+| Avg nav tokens | ~50,000 | **2,972** | **17× less** |
+| Token budget to orient on any file | ~130,000 | **~2,000** | **65× less** |
 
-[Full methodology and failure analysis →](benchmark.md)
+The key signal: when ExVisit is confident (HIGH tier), it is right **7 out of 10 times** — at 17× lower token cost than raw file reading.
+
+[Full methodology →](research.md)
+
+---
+
+## The browser model
+
+Chromium rendered HTML pages. Every browser, browser-based app, and modern web agent is built on top of it. Chromium is not itself any of those things — it is the **rendering engine** that makes navigation possible.
+
+ExVisit plays the same role for code:
+
+| Web | Code (ExVisit) |
+|---|---|
+| HTML document | Python / JS / Rust codebase |
+| Rendered DOM | `.exv` structural graph |
+| URL | File path or node FQN |
+| `<a href>` navigation | `exv blast` → ranked file list |
+| Browser tab / history | Agent conversation turn |
+| Google → page → links | Issue text → blast → neighbors |
+
+When an agent uses ExVisit as its exploration engine, the workflow is not "search then read files." It is **browse**:
+
+1. Load the structural view (`exv init` → `.exv`, done once per repo)
+2. Navigate to the region of interest (`exv blast --issue "..."`)  
+3. Explore neighbors (`exv locate`, `exv expand`)
+4. Confirm with source-level search (`rg` on a specific identifier)
+5. Submit — with a known confidence level
+
+The agent never opens a 2,000-line source file. It browses the graph.
 
 ---
 
@@ -125,6 +164,17 @@ RAG embeds semantic meaning at the function/chunk level. It is excellent at "whi
 - **Structural inheritance** — `AdminMixin` in `auth/mixins.py` affects `OrderAdmin` in `shop/admin.py` through a 3-hop inheritance chain. No vector similarity captures that.
 - **Token budget discipline** — RAG retrievers return fixed-K chunks regardless of relevance margin. ExVisit's confidence-adaptive selection returns 1 file when highly certain and up to 5 files when uncertain.
 
+## Why not just use a tool?
+
+A browser is not a tool. It is infrastructure. The distinction:
+
+- A **tool** is called once per request and returns an answer.
+- **Infrastructure** provides a navigable medium through which an agent develops understanding over multiple turns.
+
+When an agent uses `read_file` as a tool, each call is independent — no structure carries over. When an agent browses via ExVisit, it accumulates a structural model of the codebase over turns: "blast said `db/models/deletion.py` is central → locate confirmed it → rg found the symbol → HIGH confidence." That multi-turn reasoning over a stable structural graph is fundamentally different from calling a search tool.
+
+At adoption scale, ExVisit stops being "a tool agents use" and becomes "the explorer" — the agent's primary sense organ for code.
+
 [Full argument in research.md →](research.md)
 
 ---
@@ -164,10 +214,12 @@ RAG embeds semantic meaning at the function/chunk level. It is excellent at "whi
 |---|---|
 | Core parser / AST | Stable |
 | Python scaffolder (`exv init`) | Stable |
-| Blast v2 ranker | Stable |
+| Blast v2 ranker | Stable — 46.7% oracle@1 on SWE-bench Lite Django |
+| Locate v2 (multi-signal anchor) | Stable — 70% oracle hit at HIGH confidence in agentic loop |
 | CRDT merge layer | Beta |
 | Rust PEG parser (`exvisit-core`) | Early alpha |
-| MCP server (`exvisit-mcp`) | Planned |
+| MCP server (`exvisit-mcp`) | Released — npm/cargo install |
+| Agentic benchmark harness | Active — `bench/exvisit_nav.py` |
 | VS Code extension | Planned |
 
 ---

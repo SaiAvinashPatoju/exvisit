@@ -1,2 +1,1 @@
-"""Benchmark helpers for Project exvisit."""
-
+# bench — SWE-bench Lite + OpenHands + ExVisit MCP benchmark harness

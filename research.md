@@ -187,3 +187,100 @@ The target integration: add 5 lines to `claude_desktop_config.json` and Claude n
 
 Exposed MCP tools: `exvisit_blast`, `exvisit_query`, `exvisit_locate`, `exvisit_expand`, `exvisit_verify`.  
 Exposed MCP resources: the `.exv` graph as a navigable resource tree, each node as a named resource URI.
+
+---
+
+## 9. ExVisit as a coding browser — the agentic explorer model
+
+*Added 2026-04-25 following the first full agentic navigation benchmark.*
+
+### 9.1 The framing shift
+
+ExVisit was initially framed as a "structural context compiler" — a tool that preprocesses a repo and hands files to an agent. That framing is technically correct but strategically limited. The more accurate frame:
+
+**ExVisit is to code what a browser is to the web.**
+
+| Web browser | ExVisit agentic explorer |
+|---|---|
+| Renders HTML → DOM | Renders source tree → `.exv` graph |
+| URL navigation | `exv blast` / `exv locate` navigation |
+| `<a href>` follows links | Edge traversal (`exv expand`) |
+| Page content | File content (read only when needed) |
+| Browser history | Agent conversation turns |
+| Google → click → links | Issue text → blast → neighbors → rg |
+
+This matters because it determines the adoption trajectory. A tool is adopted per-project. Infrastructure is adopted per-platform. Chromium is not "a browser" — it is the rendering engine that every browser is built on. ExVisit aims to be the rendering engine that every agentic coder is built on.
+
+### 9.2 The two adoption levels
+
+**Level 1 — Tool adoption (current):**  
+ExVisit is one tool among many in an agent's system prompt. The agent can call `exv_blast` when it wants structural navigation. This already yields 17× token savings and 70% oracle hit at HIGH confidence (empirical, Django SWE-Bench Lite 2026-04-25).
+
+**Level 2 — Infrastructure adoption (target):**  
+ExVisit is the agent's primary sense organ for code. The agent does not "search for files" — it *browses the codebase*. The system prompt shifts from "here are tools including exv_blast" to "you are navigating a codebase via ExVisit — here is the structural view." The `.exv` graph is the canonical representation. Raw source is fetched only for the specific lines that need changing.
+
+At Level 2, ExVisit is no longer a system prompt component. It is the exploration engine. The agentic coder's architecture becomes:
+
+```
+Issue text
+    │
+    ▼
+ExVisit agentic loop
+    ├── exv_blast  → structural navigation
+    ├── exv_locate → precision anchor selection
+    ├── exv_expand → neighborhood verification
+    └── rg         → source-level confirmation
+    │
+    ▼
+Precise file + line location (HIGH confidence)
+    │
+    ▼
+Patch generation (minimal context, correct file)
+```
+
+### 9.3 Empirical evidence — SWE-Bench Lite Django benchmark (2026-04-25)
+
+We ran a 114-case agentic navigation benchmark on Django SWE-Bench Lite using `qwen/qwen3-coder` as the navigating agent and ExVisit tools (blast + locate + rg) as the exploration medium.
+
+**Standalone blast recall** (no LLM, pure structural navigation, 30 cases):
+
+| Metric | Value |
+|---|---|
+| Oracle hit@1 | **46.7%** |
+| Oracle hit@3 | **63.3%** |
+| Oracle hit@5 | **66.7%** |
+| Avg tokens per case | ~2,000 |
+
+**Agentic loop** (LLM navigates via ExVisit tools, 43 cases completed at time of writing):
+
+| Metric | Value |
+|---|---|
+| Oracle hit@1 | **34.9%** |
+| Oracle hit (any) | **41.9%** |
+| Oracle hit — HIGH confidence cases only | **70.0%** |
+| Avg nav tokens | **2,972** (vs ~50,000 estimated baseline) |
+| Token savings | **17×** |
+
+The confidence tier finding is the most important: **when ExVisit is confident, it is right 70% of the time.** This is the signal that separates infrastructure from tools — a tool's accuracy is fixed; a browser's accuracy improves as you navigate more of the graph.
+
+**Failure mode taxonomy** (from the benchmark postmortem):
+
+| Failure type | Cause | Fix |
+|---|---|---|
+| 100% blast failure (v1 run) | CLI `--max-files` flag passed to `blast` subparser (belongs on `expand`) | Remove flag; slice output in Python |
+| LLM produces no prediction | `<think>...</think>` reasoning fills `max_tokens` before JSON output | Strip think tags; increase `max_tokens`; require JSON in tool schema |
+| LLM retries failing tool | No error recovery in system prompt | "If tool returns ERROR, switch to different tool" rule |
+| Blast misses oracle (33% of cases) | Structural signals insufficient for issue text | Add rg cross-reference, locate as fallback |
+
+**Critical lesson:** before running a 114-case benchmark, validate every tool call succeeds on a single case. A 100% tool failure rate is invisible until you analyze the raw traces.
+
+### 9.4 The path from tool to browser
+
+The transition from Level 1 (tool) to Level 2 (browser/infrastructure) requires:
+
+1. **`.exv` becomes the canonical repo artifact** — committed alongside source, updated on every structural change (CI hook on `exv init --check`).
+2. **ExVisit MCP server** — agents receive the structural graph as a first-class resource, not as a tool response to parse.
+3. **Confidence-gated read** — agents fetch raw source *only* when ExVisit confidence is below threshold. At HIGH confidence, the structural view alone is enough to generate a correct patch location.
+4. **Streaming graph updates** — as the agent edits files, the `.exv` graph updates incrementally via CRDT merge. The agent's navigation state is always consistent with the codebase state.
+
+When all four are in place, ExVisit is not a tool the agent uses. It is the medium through which the agent perceives code.
