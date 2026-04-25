@@ -52,6 +52,8 @@ lto = "thin"
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.22.1"
+# Allow CI file to differ from cargo-dist generated template
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # Target platforms to build apps for (Rust target-triple syntax)
