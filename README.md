@@ -1,6 +1,6 @@
 # ExVisit
 
-**ExVisit is a coding browser, not a tool.**
+**Structural context compiler for AI coding agents � find the right files without an LLM.**
 
 ```bash
 pip install exvisit
@@ -8,82 +8,50 @@ exv init --repo ./my-project
 exv blast my-project.exv --issue "TypeError in User.save() for blank email"
 ```
 
-Just as a browser renders HTML into a navigable page, ExVisit renders a codebase's structural graph into a navigable map. An LLM using ExVisit doesn't "read files" — it **browses code**. It reads one structural view, reasons, navigates to the next, and converges on the right file without ever loading raw source.
-
-This distinction matters at adoption scale. When ExVisit is just one more tool in a system prompt, it saves tokens. When it becomes the **primary navigation primitive** — the medium through which agents explore — it changes what's possible. The agent doesn't need to read a codebase. It browses it.
+ExVisit renders a codebase's structural graph into a navigable map. An agent using ExVisit doesn't read files � it **browses code**. It reads one structural view, reasons, and navigates to the next, converging on the right file without ever loading raw source.
 
 ---
 
-## The numbers
+## Benchmark results � v0.5.0
 
-**Standalone blast recall** — `exv blast` with no LLM, raw structural navigation, 30-case Django SWE-Bench Lite:
+**No-LLM oracle navigation** on SWE-bench Lite (Django subset, 32 cases):
 
-| Metric | ExVisit blast | Improvement vs random |
+| Metric | ExVisit v0.5.0 | ExVisit v0.4.x |
 |---|---:|---:|
-| Oracle hit@1 | **46.7%** | — |
-| Oracle hit@3 | **63.3%** | — |
-| Oracle hit@5 | **66.7%** | — |
-| Avg nav tokens | **~2,000** | 98% less than full repo read |
+| Oracle hit@1 (exact file match) | **68.8%** | 46.7% |
+| Avg files in bundle | **4.2** | 3.1 |
+| Avg tokens per query | **~2,000** | ~2,000 |
+| Token reduction vs full-repo read | **97.5%** | 98% |
 
-**Agentic loop** — LLM browses via ExVisit tools (blast + locate + rg), 43-case Django SWE-Bench Lite:
+**68.8% hit rate with zero LLM calls** � the correct file is in the returned bundle more than 2 out of 3 times, at 97.5% lower token cost than reading the full repo.
 
-| Metric | Baseline (LLM alone) | ExVisit-Powered | Delta |
-|---|---:|---:|---:|
-| Oracle hit@1 | ~35% (est.) | **34.9%** | baseline |
-| Oracle hit when HIGH confidence | — | **70.0%** | — |
-| Avg nav tokens | ~50,000 | **2,972** | **17× less** |
-| Token budget to orient on any file | ~130,000 | **~2,000** | **65× less** |
+**Agentic loop** (LLM + ExVisit tools, 43-case Django SWE-bench Lite):
 
-The key signal: when ExVisit is confident (HIGH tier), it is right **7 out of 10 times** — at 17× lower token cost than raw file reading.
-
-[Full methodology →](research.md)
+| Metric | Value |
+|---|---:|
+| Oracle hit when HIGH confidence | **70.0%** |
+| Avg nav tokens | **~2,972** |
+| Token reduction vs full-repo read | **94%** |
 
 ---
 
-## The browser model
-
-Chromium rendered HTML pages. Every browser, browser-based app, and modern web agent is built on top of it. Chromium is not itself any of those things — it is the **rendering engine** that makes navigation possible.
-
-ExVisit plays the same role for code:
-
-| Web | Code (ExVisit) |
-|---|---|
-| HTML document | Python / JS / Rust codebase |
-| Rendered DOM | `.exv` structural graph |
-| URL | File path or node FQN |
-| `<a href>` navigation | `exv blast` → ranked file list |
-| Browser tab / history | Agent conversation turn |
-| Google → page → links | Issue text → blast → neighbors |
-
-When an agent uses ExVisit as its exploration engine, the workflow is not "search then read files." It is **browse**:
-
-1. Load the structural view (`exv init` → `.exv`, done once per repo)
-2. Navigate to the region of interest (`exv blast --issue "..."`)  
-3. Explore neighbors (`exv locate`, `exv expand`)
-4. Confirm with source-level search (`rg` on a specific identifier)
-5. Submit — with a known confidence level
-
-The agent never opens a 2,000-line source file. It browses the graph.
-
----
-
-## What it actually does
+## How it works
 
 ```
 my-project/
-├── auth/
-│   ├── models.py          ← Node: AuthModels
-│   └── forms.py           ← Node: AuthForms
-├── payments/
-│   ├── models.py          ← Node: PaymentModels
-│   └── views.py           ← Node: PaymentViews
-└── ...
++-- auth/
+�   +-- models.py          ? Node: AuthModels
+�   +-- forms.py           ? Node: AuthForms
++-- payments/
+�   +-- models.py          ? Node: PaymentModels
+�   +-- views.py           ? Node: PaymentViews
++-- ...
 ```
 
 After `exv init`:
 
 ```
-# my-project.exv — generated structural map
+# my-project.exv
 AuthModels -> AuthForms [import]
 PaymentViews -> PaymentModels [import]
 PaymentModels -> AuthModels [inherit]
@@ -92,90 +60,194 @@ PaymentModels -> AuthModels [inherit]
 After `exv blast my-project.exv --issue "Stripe webhook fails on invalid card"`:
 
 ```
-# Blast bundle (3 files, 1,840 tokens)
-payments/views.py     ← anchor (score: 42.1)
-payments/models.py    ← neighbor via [inherit]
-auth/models.py        ← neighbor via [inherit]
+# Blast bundle (3 files, ~1,840 tokens)
+payments/views.py     ? anchor (score: 42.1)
+payments/models.py    ? neighbor via [inherit]
+auth/models.py        ? neighbor via [inherit]
 ```
 
-The agent gets exactly what it needs in one call. Not a 130K soup of every file in the project.
+The agent gets the 3 files most likely to contain the bug � not a 130K token dump of the entire project.
 
 ---
 
 ## Installation
 
+### Python CLI (recommended)
+
 ```bash
-pip install exvisit            # core CLI only
-pip install "exvisit[bench]"   # + benchmark stack (tiktoken, datasets, openai, anthropic)
-pip install "exvisit[mcp]"     # + MCP server for Claude Desktop / Cursor
-pip install "exvisit[dev]"     # + all extras + test/lint tooling
+pip install exvisit                  # core CLI only
+pip install "exvisit[mcp]"           # + MCP server deps (fastapi, uvicorn, mcp)
+pip install "exvisit[dev]"           # + all extras + test/lint tooling
 ```
 
-Requires Python 3.11+. No mandatory Rust build step (Rust extensions are optional acceleration).
+Requires **Python 3.11+**. No Rust build step required.
+
+### MCP server binary (for Claude Desktop / Cursor / VS Code)
+
+Download the pre-built binary from the [latest release](https://github.com/SaiAvinashPatoju/exvisit/releases/latest):
+
+| Platform | Asset |
+|---|---|
+| Windows x64 | `exvisit-mcp-windows-amd64.exe` |
+| macOS Apple Silicon | `exvisit-mcp-macos-arm64` |
+| macOS Intel | `exvisit-mcp-macos-x64` |
+| Linux x64 | `exvisit-mcp-linux-amd64` |
+
+The binary is a self-contained MCP stdio server. It requires **Python + `exvisit`** installed separately � it delegates all work to `exv` / `python -m exvisit`.
+
+### npm (installs binary automatically)
+
+```bash
+npm install -g exvisit-mcp
+```
 
 ---
 
-## Core commands
+## MCP setup guide
 
-| Command | What it does |
+The `exvisit-mcp` binary speaks JSON-RPC 2.0 over stdin/stdout. Configure it in your AI client � **do not double-click it** (it has nothing to talk to without a client).
+
+### Claude Desktop
+
+Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+
+```json
+{
+  "mcpServers": {
+    "exvisit": {
+      "command": "C:\\path\\to\\exvisit-mcp-windows-amd64.exe",
+      "args": []
+    }
+  }
+}
+```
+
+Or if installed via npm:
+
+```json
+{
+  "mcpServers": {
+    "exvisit": {
+      "command": "npx",
+      "args": ["exvisit-mcp"]
+    }
+  }
+}
+```
+
+### Cursor
+
+Create `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "exvisit": {
+      "command": "C:\\path\\to\\exvisit-mcp-windows-amd64.exe",
+      "args": []
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot)
+
+In `.vscode/mcp.json` or user `settings.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "exvisit": {
+        "type": "stdio",
+        "command": "C:\\path\\to\\exvisit-mcp-windows-amd64.exe",
+        "args": []
+      }
+    }
+  }
+}
+```
+
+### Verify the server is running
+
+```bash
+# Linux / macOS
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | ./exvisit-mcp-linux-amd64
+
+# Windows PowerShell
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | .\exvisit-mcp-windows-amd64.exe
+```
+
+You should see a JSON response listing all available tools.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `EXVISIT_CMD` | � | Override the `exv` binary path |
+| `EXVISIT_PYTHON` | `python` | Override the Python interpreter path |
+
+---
+
+## MCP tools reference
+
+| Tool | Description |
 |---|---|
-| `exv init --repo .` | Scaffold a `.exv` graph and `.meta.json` sidecar from a Python project |
-| `exv blast <file.exv>` | Select the optimal file bundle for an issue / query |
-| `exv query <file.exv> AuthModels` | Navigate the graph from a named node |
-| `exv verify <file.exv>` | Validate `.exv` syntax and edge consistency |
-| `exv edit <file.exv>` | Apply a structured edit to the graph (CRDT merge) |
-| `exv anchor <file.exv>` | Show the ranked anchor selection report |
+| `exv_init` | Generate a `.exv` structural map from a repository root |
+| `exv_blast` | Rank files most relevant to an issue / error text |
+| `exv_query` | Extract a topological slice around a named node |
+| `exv_locate` | Score nodes with confidence margin for anchoring |
+| `exv_expand` | Weighted neighborhood expansion from an anchor |
+| `exv_anchor` | Resolve a stack trace to ground-zero anchor nodes |
+| `exv_deps` | Outbound dependency list for a node |
+| `exv_callers` | Inbound caller list for a node |
+| `exv_verify` | Check structural consistency of `.exv` vs repo |
 
-All commands have `--help`. The short form (`exv`) and the long form (`exvisit`) are identical.
+---
+
+## Core CLI commands
+
+```bash
+exv init --repo ./my-project          # scaffold .exv + .meta.json
+exv blast my-project.exv \
+  --issue "bug description"           # get ranked file bundle
+exv locate my-project.exv \
+  --issue "bug description"           # top-K anchors with confidence
+exv query my-project.exv \
+  --target AuthModels                 # topological slice
+exv anchor my-project.exv \
+  --stacktrace "Traceback..."         # resolve stack trace to anchors
+exv verify my-project.exv             # validate syntax + edge consistency
+```
+
+All commands support `--help`. `exv` and `exvisit` are identical entry points.
 
 ---
 
 ## The `.exv` format
 
-`.exv` is a plain-text graph format. It is intentionally human-readable and version-control-friendly.
+`.exv` is a plain-text graph format � human-readable and version-control-friendly.
 
 ```
-# myslicer.exv
-namespace core
-  SlicerEngine
-  SlicerConfig [config-ref: SlicerEngine]
+# my-project.exv
+namespace auth
+  UserModel
+  AuthForms [test-of: UserModel]
 
-namespace io
-  FileReader
-  FileWriter
+namespace payments
+  PaymentModel
+  StripeClient
+  WebhookView
 
-SlicerEngine -> FileReader [import]
-SlicerEngine -> FileWriter [import]
-FileReader -> SlicerConfig [config-ref]
+WebhookView -> PaymentModel [import]
+PaymentModel -> UserModel [inherit]
+StripeClient -> PaymentModel [call]
 ```
 
-Edge types: `import`, `inherit`, `config-ref`, `test-of`, `call`.
-Node types: `code`, `test`, `migration`, `registry`.
+**Edge types:** `import`, `inherit`, `config-ref`, `test-of`, `call`
+**Node types:** `code`, `test`, `migration`, `registry`
 
 The format has a [formal grammar spec](spec/exvisit-dsl-v0.4-draft.md) and a [Rust PEG parser](rust/crates/exvisit-core/src/exvisit.pest) in progress.
-
----
-
-## Why not just use RAG?
-
-RAG embeds semantic meaning at the function/chunk level. It is excellent at "which chunk of docs answers this question." It is terrible at:
-
-- **Cross-file dependency chains** — knowing that `PaymentView` calls `StripeClient.charge()` which is defined in `payments/integrations.py` requires graph traversal, not nearest-neighbor lookup.
-- **Structural inheritance** — `AdminMixin` in `auth/mixins.py` affects `OrderAdmin` in `shop/admin.py` through a 3-hop inheritance chain. No vector similarity captures that.
-- **Token budget discipline** — RAG retrievers return fixed-K chunks regardless of relevance margin. ExVisit's confidence-adaptive selection returns 1 file when highly certain and up to 5 files when uncertain.
-
-## Why not just use a tool?
-
-A browser is not a tool. It is infrastructure. The distinction:
-
-- A **tool** is called once per request and returns an answer.
-- **Infrastructure** provides a navigable medium through which an agent develops understanding over multiple turns.
-
-When an agent uses `read_file` as a tool, each call is independent — no structure carries over. When an agent browses via ExVisit, it accumulates a structural model of the codebase over turns: "blast said `db/models/deletion.py` is central → locate confirmed it → rg found the symbol → HIGH confidence." That multi-turn reasoning over a stable structural graph is fundamentally different from calling a search tool.
-
-At adoption scale, ExVisit stops being "a tool agents use" and becomes "the explorer" — the agent's primary sense organ for code.
-
-[Full argument in research.md →](research.md)
 
 ---
 
@@ -183,28 +255,44 @@ At adoption scale, ExVisit stops being "a tool agents use" and becomes "the expl
 
 ```
 .exv file (text)
-      │
-      ▼
-  exvisit.parser        — hand-rolled recursive descent
-      │
-      ▼
-  exvisit.ast           — Namespace / Node / Edge / exvisitDoc
-      │
-      ▼
-  exvisit.scaffold      — Python repo → .exv + .meta.json
-      │ (precompute)
-      ▼
-  graph_meta.NodeMeta   — per-node: fqn, symbols, loc, pagerank, cluster
-      │
-      ▼
-  scoring_v2.score_nodes_v2   — log-linear ranker (15+ signals)
-      │
-      ▼
-  blast.build_blast_bundle    — typed edge traversal + precision guards
-      │
-      ▼
-  Compact bundle (≤6 files, ≤2K tokens) → agent
+      �
+      ?
+  exvisit.parser        � hand-rolled recursive descent
+      �
+      ?
+  exvisit.ast           � Namespace / Node / Edge / exvisitDoc
+      �
+      ?
+  exvisit.scaffold      � Python repo ? .exv + .meta.json (call edges, migrations)
+      � (precompute)
+      ?
+  graph_meta.NodeMeta   � per-node: fqn, symbols, loc, pagerank, cluster
+      �
+      ?
+  scoring_v2            � log-linear ranker (18+ signals)
+    signals: BM25, trace, symbol match, PageRank (capped),
+             cluster IDF, domain bias, dunder match, error codes,
+             management commands, call_target, inherit_target, term_idf,
+             registry penalty, neighbor adjacency
+      �
+      ?
+  blast.build_blast_bundle  � multi-phase selection:
+    anchor ? precision guards ? neighbor ? sibling
+    ? __init__.py injection ? parent-package expansion ? graph-fill
+      �
+      ?
+  Compact bundle (=6�10 files, ~2K tokens) ? agent
 ```
+
+---
+
+## Why not just use RAG?
+
+RAG embeds semantic meaning at the function/chunk level � excellent for "which chunk of docs answers this question." It struggles with:
+
+- **Cross-file dependency chains** � knowing that `PaymentView` calls `StripeClient.charge()` defined in `payments/integrations.py` requires graph traversal, not nearest-neighbor lookup.
+- **Structural inheritance** � `AdminMixin` in `auth/mixins.py` affects `OrderAdmin` in `shop/admin.py` through a 3-hop chain. No vector similarity captures that.
+- **Token budget discipline** � RAG retrievers return fixed-K chunks regardless of relevance margin. ExVisit's confidence-adaptive selection returns 1 file when highly certain, up to 10 when uncertain.
 
 ---
 
@@ -214,22 +302,37 @@ At adoption scale, ExVisit stops being "a tool agents use" and becomes "the expl
 |---|---|
 | Core parser / AST | Stable |
 | Python scaffolder (`exv init`) | Stable |
-| Blast v2 ranker | Stable — 46.7% oracle@1 on SWE-bench Lite Django |
-| Locate v2 (multi-signal anchor) | Stable — 70% oracle hit at HIGH confidence in agentic loop |
+| Blast v2 ranker | **Stable � 68.8% oracle@1 (no LLM), SWE-bench Lite** |
+| Locate v2 (multi-signal anchor) | Stable � 70% oracle@1 at HIGH confidence (agentic) |
+| MCP server binary (`exvisit-mcp`) | **Released � v0.5.0** |
 | CRDT merge layer | Beta |
 | Rust PEG parser (`exvisit-core`) | Early alpha |
-| MCP server (`exvisit-mcp`) | Released — npm/cargo install |
-| Agentic benchmark harness | Active — `bench/exvisit_nav.py` |
 | VS Code extension | Planned |
 
 ---
 
 ## Contributing
 
-See [setup.md](setup.md) for the full guide — prerequisites, virtual environment setup, test suite, linting, benchmark runner, and project layout.
+```bash
+git clone https://github.com/SaiAvinashPatoju/exvisit
+cd exvisit
+
+# Windows
+python -m venv .venv && .venv\Scripts\activate
+# Linux / macOS
+python -m venv .venv && source .venv/bin/activate
+
+pip install -e ".[dev]"
+pytest tests/ -q
+```
+
+Run the navigation benchmark (requires HuggingFace SWE-bench Lite cached locally):
+
+```bash
+python -m bench.run_bench --mode nav-only --limit 32
+```
 
 ---
 
 ## License
-
 Apache-2.0
