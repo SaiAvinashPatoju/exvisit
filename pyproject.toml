@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "exvisit"
-version = "0.5.1"
+version = "0.5.2"
 description = "Structural context compiler for AI coding agents — 73× token reduction via spatial .exv maps"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
