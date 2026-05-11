@@ -386,9 +386,13 @@ def generate(repo: str, root_name: str = "App", fast_imports: bool = False,
     """Generate `.exv` text from a repo. If `meta_out` is given, also write
     a sidecar `<meta_out>` containing the GraphMeta JSON."""
     r = Path(repo)
+    if not r.exists():
+        raise ValueError(f"Repository path does not exist: {repo}")
+    if not r.is_dir():
+        raise ValueError(f"Repository path is not a directory: {repo}")
     packages = _scan_with_ignores(r, ignore_file)
     if not packages:
-        return f"@L0 {root_name} [0,0,100,100] {{\n}}\n"
+        raise ValueError(f"No Python files found in repository: {repo} (ignored directories: {', '.join(SKIP_DIRS)})")
 
     # sort packages by path depth (shallow first -> root-level files)
     pkg_items = sorted(packages.items(), key=lambda kv: (len(kv[0].relative_to(r).parts), str(kv[0])))
