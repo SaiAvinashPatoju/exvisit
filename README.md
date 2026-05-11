@@ -4,7 +4,7 @@
 
 ```bash
 pip install exvisit
-exv init --repo ./my-project
+exv init --repo ./my-project --out my-project.exv
 exv blast my-project.exv --issue "TypeError in User.save() for blank email"
 ```
 
@@ -17,7 +17,7 @@ ExVisit renders a codebase's structural graph into a navigable map. An agent usi
 **No-LLM oracle navigation** on SWE-bench Lite (Django subset, 32 cases):
 
 | Metric | ExVisit v0.5.0 | ExVisit v0.4.x |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Oracle hit@1 (exact file match) | **68.8%** | 46.7% |
 | Avg files in bundle | **4.2** | 3.1 |
 | Avg tokens per query | **~2,000** | ~2,000 |
@@ -28,7 +28,7 @@ ExVisit renders a codebase's structural graph into a navigable map. An agent usi
 **Agentic loop** (LLM + ExVisit tools, 43-case Django SWE-bench Lite):
 
 | Metric | Value |
-|---|---:|
+| --- | ---: |
 | Oracle hit when HIGH confidence | **70.0%** |
 | Avg nav tokens | **~2,972** |
 | Token reduction vs full-repo read | **94%** |
@@ -37,7 +37,7 @@ ExVisit renders a codebase's structural graph into a navigable map. An agent usi
 
 ## How it works
 
-```
+```text
 my-project/
 +-- auth/
 �   +-- models.py          ? Node: AuthModels
@@ -50,7 +50,7 @@ my-project/
 
 After `exv init`:
 
-```
+```text
 # my-project.exv
 AuthModels -> AuthForms [import]
 PaymentViews -> PaymentModels [import]
@@ -59,7 +59,7 @@ PaymentModels -> AuthModels [inherit]
 
 After `exv blast my-project.exv --issue "Stripe webhook fails on invalid card"`:
 
-```
+```text
 # Blast bundle (3 files, ~1,840 tokens)
 payments/views.py     ? anchor (score: 42.1)
 payments/models.py    ? neighbor via [inherit]
@@ -87,7 +87,7 @@ Requires **Python 3.11+**. No Rust build step required.
 Download the pre-built binary from the [latest release](https://github.com/SaiAvinashPatoju/exvisit/releases/latest):
 
 | Platform | Asset |
-|---|---|
+| --- | --- |
 | Windows x64 | `exvisit-mcp-windows-amd64.exe` |
 | macOS Apple Silicon | `exvisit-mcp-macos-arm64` |
 | macOS Intel | `exvisit-mcp-macos-x64` |
@@ -183,7 +183,7 @@ You should see a JSON response listing all available tools.
 ### Environment variables
 
 | Variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `EXVISIT_CMD` | � | Override the `exv` binary path |
 | `EXVISIT_PYTHON` | `python` | Override the Python interpreter path |
 
@@ -192,7 +192,7 @@ You should see a JSON response listing all available tools.
 ## MCP tools reference
 
 | Tool | Description |
-|---|---|
+| --- | --- |
 | `exv_init` | Generate a `.exv` structural map from a repository root |
 | `exv_blast` | Rank files most relevant to an issue / error text |
 | `exv_query` | Extract a topological slice around a named node |
@@ -208,7 +208,7 @@ You should see a JSON response listing all available tools.
 ## Core CLI commands
 
 ```bash
-exv init --repo ./my-project          # scaffold .exv + .meta.json
+exv init --repo ./my-project --out my-project.exv  # scaffold .exv + .meta.json
 exv blast my-project.exv \
   --issue "bug description"           # get ranked file bundle
 exv locate my-project.exv \
@@ -228,7 +228,7 @@ All commands support `--help`. `exv` and `exvisit` are identical entry points.
 
 `.exv` is a plain-text graph format � human-readable and version-control-friendly.
 
-```
+```text
 # my-project.exv
 namespace auth
   UserModel
@@ -253,7 +253,7 @@ The format has a [formal grammar spec](spec/exvisit-dsl-v0.4-draft.md) and a [Ru
 
 ## Architecture
 
-```
+```text
 .exv file (text)
       �
       ?
@@ -299,7 +299,7 @@ RAG embeds semantic meaning at the function/chunk level � excellent for "which
 ## Project status
 
 | Component | Status |
-|---|---|
+| --- | --- |
 | Core parser / AST | Stable |
 | Python scaffolder (`exv init`) | Stable |
 | Blast v2 ranker | **Stable � 68.8% oracle@1 (no LLM), SWE-bench Lite** |
